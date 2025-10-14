@@ -22,6 +22,8 @@ A TUI tool for managing Kubernetes port forwards to GKE services.
 
 ## Installation
 
+### Build yourself
+
 1. Clone or download this repository
 2. Install dependencies:
    ```bash
@@ -35,6 +37,10 @@ A TUI tool for managing Kubernetes port forwards to GKE services.
    ```bash
    sudo mv service-helper /usr/local/bin/
    ```
+
+### Prebuilt
+
+A prebuilt binary is available on the [releases page](https://github.com/lucaryholt/kubefwd/releases) of this repo.
 
 ## Configuration
 
