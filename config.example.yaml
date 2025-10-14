@@ -1,0 +1,84 @@
+# GKE Port Forward Configuration
+# This file defines which services to make available for port forwarding
+#
+# Copy this file to ~/.kubefwd.yaml and edit it with your cluster details:
+#   cp config.example.yaml ~/.kubefwd.yaml
+
+# The GKE cluster context (use 'kubectl config get-contexts' to see available contexts)
+cluster_context: gke_my-project_us-central1_my-cluster
+
+# Optional: Friendly name for the default cluster (shown in context selection)
+cluster_name: Production
+
+# The namespace where the services are located
+namespace: default
+
+# Optional: Alternative cluster contexts for quick switching
+# Press 'c' in the management view to switch between contexts
+alternative_contexts:
+  - name: Staging
+    context: gke_my-project_us-central1_staging-cluster
+  - name: Development
+    context: gke_my-project_us-central1_dev-cluster
+
+# Optional: Presets for quickly starting predefined sets of services
+# Press 'p' in the management view to apply a preset
+# Applying a preset will stop all running services and start only the ones in the preset
+presets:
+  - name: Backend Development
+    services:
+      - API Server
+      - Database
+      - Redis Cache
+  - name: Full Stack
+    services:
+      - API Server
+      - Database
+      - Admin Dashboard
+  - name: Minimal
+    services:
+      - API Server
+
+# List of services available for port forwarding
+services:
+  - name: API Server
+    service_name: api-service
+    remote_port: 8080
+    local_port: 8080
+    selected_by_default: true
+    # Uses global context and namespace
+
+  - name: Database
+    service_name: postgres
+    remote_port: 5432
+    local_port: 5432
+    selected_by_default: false
+    # Uses global context and namespace
+
+  - name: Redis Cache
+    service_name: redis
+    remote_port: 6379
+    local_port: 6379
+    selected_by_default: false
+
+  - name: Admin Dashboard
+    service_name: admin-ui
+    remote_port: 3000
+    local_port: 3000
+    selected_by_default: true
+
+  - name: Metrics Server
+    service_name: prometheus
+    remote_port: 9090
+    local_port: 9090
+    selected_by_default: false
+
+  # Example with context/namespace overrides
+  - name: Staging DB
+    service_name: postgres
+    remote_port: 5432
+    local_port: 5433
+    selected_by_default: false
+    context: gke_my-project_us-central1_staging-cluster  # Override cluster context
+    namespace: staging                                    # Override namespace
+
