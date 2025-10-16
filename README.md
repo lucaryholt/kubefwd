@@ -1,11 +1,12 @@
 # kubefwd
 
-A TUI tool for managing Kubernetes port forwards to GKE services.
+A TUI tool for managing Kubernetes port forwards to GKE services and proxy connections to GCP resources.
 
 ## Features
 
 - 🎮 Real-time port forward management for all services
 - ⚡ Start/stop individual services or all at once
+- ☁️ Proxy pod support for GCP services (CloudSQL, MemoryStore, etc.)
 - 🎯 Quick-start default services with one key press
 - 📋 Presets for quickly starting predefined sets of services
 - 🔄 Switch between cluster contexts on-the-fly with safety confirmation
@@ -95,6 +96,21 @@ services:
     local_port: 8081
     selected_by_default: false
     max_retries: 5                  # Override global retry setting
+
+# Optional: Proxy services for GCP resources that need a proxy pod
+# These services create a shared proxy pod in the cluster to relay traffic
+proxy_services:
+  - name: CloudSQL Production
+    target_host: 10.1.2.3          # Private IP of CloudSQL instance
+    target_port: 5432
+    local_port: 5432
+    selected_by_default: false
+
+  - name: Redis MemoryStore
+    target_host: 10.1.3.5          # Private IP of MemoryStore instance
+    target_port: 6379
+    local_port: 6380
+    selected_by_default: true
 ```
 
 ### Configuration Fields
@@ -113,7 +129,7 @@ services:
 - **presets** (optional): Predefined sets of services for quick activation
   - **name**: Display name for the preset
   - **services**: List of service names (must match the `name` field in services list)
-- **services**: List of services with the following fields:
+- **services**: List of direct Kubernetes services with the following fields:
   - **name**: Display name shown in the TUI
   - **service_name**: Actual Kubernetes service name
   - **remote_port**: Port on the Kubernetes service
@@ -122,6 +138,19 @@ services:
   - **context** (optional): Override the global cluster context for this service
   - **namespace** (optional): Override the global namespace for this service
   - **max_retries** (optional): Override the global max_retries setting for this specific service
+- **proxy_pod_name** (optional): Name for the shared proxy pod (default: `kubefwd-proxy`)
+- **proxy_pod_image** (optional): Container image for proxy pod (default: `alpine/socat:latest`)
+- **proxy_pod_context** (optional): Context where the proxy pod should be created (default: uses `cluster_context`)
+- **proxy_pod_namespace** (optional): Namespace where the proxy pod should be created (default: uses `namespace`)
+- **proxy_services** (optional): List of proxy services for GCP resources with the following fields:
+  - **name**: Display name shown in the TUI
+  - **target_host**: IP address or hostname of the target GCP resource (e.g., CloudSQL private IP)
+  - **target_port**: Port on the target resource
+  - **local_port**: Port on your local machine
+  - **selected_by_default**: Whether this service should be started with the "d" key
+  - **context** (optional): Override the global cluster context for this proxy
+  - **namespace** (optional): Override the global namespace for this proxy
+  - **max_retries** (optional): Override the global max_retries setting for this specific proxy
 
 ## Usage
 
@@ -177,9 +206,12 @@ nano ~/.kubefwd.yaml
 - `[ERROR]` (red): Port forward encountered an error (max retries exceeded or retries disabled)
 
 **Display Information:**
+- ⚡ Direct services (kubectl port-forward to Kubernetes services)
+- ☁️ Proxy services (proxy pod connections to GCP resources)
 - Services marked as default show a ★ (star) indicator
 - Services with overridden context/namespace show `[ctx: name]` or `[ns: name]` tags
 - Error messages are displayed below failed services with full kubectl command for debugging
+- Proxy pod status shows creation state and number of active connections
 
 ### Context Switching
 
@@ -207,6 +239,156 @@ Presets allow you to define and quickly apply specific sets of services. This is
    - Stop all currently running port forwards
    - Start only the services defined in the preset
 4. Return to the management view with your preset active
+
+## Proxy Pod for GCP Resources
+
+The proxy pod feature allows you to connect to GCP resources (CloudSQL, MemoryStore, etc.) that don't have direct Kubernetes services but are accessible from within the cluster.
+
+### How It Works
+
+1. **Shared Proxy Pod**: All selected proxy services share a single-container pod with multiple socat processes
+2. **Selection-Based Management**: Use the proxy selection screen (press `r`) to choose which services to activate
+3. **Traffic Relay**: The pod uses `socat` to relay TCP traffic from the pod to the target GCP resource
+4. **Port Forwarding**: Standard kubectl port-forward connects your local machine to the proxy pod
+5. **Manual Lifecycle**: Pod is created/recreated when you apply selection changes
+
+### Configuration
+
+Add proxy services to your `.kubefwd.yaml`:
+
+```yaml
+# Optional: Customize proxy pod settings
+proxy_pod_name: kubefwd-proxy           # Default name for the pod
+proxy_pod_image: alpine/socat:latest    # Container image (must have socat)
+proxy_pod_context: gke_proxy_cluster    # Optional: different cluster for proxy pod
+proxy_pod_namespace: proxy-infra        # Optional: different namespace for proxy pod
+
+proxy_services:
+  - name: CloudSQL Production
+    target_host: 10.1.2.3              # Private IP of CloudSQL instance
+    target_port: 5432                  # PostgreSQL port
+    local_port: 5432                   # Local port to bind
+    selected_by_default: false
+
+  - name: Redis MemoryStore
+    target_host: 10.1.3.5              # Private IP of MemoryStore
+    target_port: 6379                  # Redis port
+    local_port: 6380                   # Use different port locally
+    selected_by_default: true
+```
+
+### Getting GCP Resource IPs
+
+**CloudSQL:**
+```bash
+# Get the private IP address of your CloudSQL instance
+gcloud sql instances describe INSTANCE_NAME --format="value(ipAddresses[0].ipAddress)"
+```
+
+**MemoryStore (Redis):**
+```bash
+# Get the Redis instance IP
+gcloud redis instances describe INSTANCE_NAME --region=REGION --format="value(host)"
+```
+
+**MemoryStore (Memcached):**
+```bash
+# Get the Memcached instance IP
+gcloud memcache instances describe INSTANCE_NAME --region=REGION --format="value(memcacheNodes[0].host)"
+```
+
+### Split-View Interface
+
+The main management view displays proxy services in a separate pane:
+
+```
+┌─────────────────────────────────────┬──────────────────────┐
+│ kubefwd                              │ Proxy Services       │
+│                                      │                      │
+│ Cluster: Production                  │ Pod: [READY] (2)     │
+│ Namespace: default                   │                      │
+│                                      │ [✓] CloudSQL Staging │
+│ ▶ ★ API Server    [RUNNING] :8080   │ [✓] Redis Store      │
+│   ★ Database      [STOPPED] :5432   │ [ ] CloudSQL Prod    │
+│     Redis Cache   [STOPPED] :6379   │ [ ] MySQL Prod       │
+│                                      │                      │
+│ ↑/↓: navigate • r: proxy • q: quit  │ Press 'r' to manage  │
+└─────────────────────────────────────┴──────────────────────┘
+```
+
+**Left Pane**: Interactive direct Kubernetes service management  
+**Right Pane**: Read-only proxy service status overview
+
+### Using Proxy Services
+
+**Step 1: Press `r` to open proxy selection**
+
+```
+Select Proxy Services
+
+  [ ] CloudSQL Production       :5432 -> 10.1.2.3:5432
+  [✓] CloudSQL Staging          :5433 -> 10.1.2.4:5432
+  [✓] Redis MemoryStore         :6380 -> 10.1.3.5:6379
+  [ ] MySQL Production          :3306 -> 10.1.4.6:3306
+
+Currently active: CloudSQL Staging, Redis MemoryStore
+
+space: toggle • enter: apply changes • esc: cancel
+```
+
+**Step 2: Select/deselect services**
+- Use `↑`/`↓` or `j`/`k` to navigate
+- Press `space` to toggle selection
+- Services with `[✓]` will be activated
+
+**Step 3: Press `enter` to apply**
+- Stops all existing proxy forwards
+- Deletes old proxy pod (if selection changed)
+- Creates new proxy pod with selected services
+- Starts port-forwards for all selected services
+
+**Step 4: Press `esc` or `q` to cancel** without changes
+
+**Step 5: Connect to services**
+- Connect to `localhost:<local_port>` with your database client
+- Services remain active until you change selection
+
+### Proxy Pod Status
+
+The management view shows the proxy pod status when proxy services are configured:
+- `[NOT CREATED]`: Pod hasn't been created yet
+- `[CREATING]`: Pod is being created and starting
+- `[READY]`: Pod is running and ready for connections
+- `[ERROR]`: Pod creation or readiness check failed
+- Active connection count shows how many proxy services are currently using the pod
+
+### Proxy Pod Context and Namespace
+
+By default, the proxy pod is created in the same context and namespace as your global configuration. However, you can override these:
+
+**Use Cases:**
+- **Different Cluster**: If your main services are in one cluster but only a specific cluster has VPC access to GCP resources
+- **Separate Namespace**: For organizational purposes, network policies, or RBAC separation
+- **Dedicated Infrastructure**: Keep proxy infrastructure separate from application services
+
+**Example Configuration:**
+```yaml
+cluster_context: gke_my-app-cluster      # Main cluster for services
+namespace: default                       # Main namespace
+
+# Proxy pod in different cluster that has VPC peering to GCP
+proxy_pod_context: gke_my-proxy-cluster
+proxy_pod_namespace: proxy-infra
+```
+
+### Behavior Notes
+
+- **Shared Resource**: All proxy services share the same pod to minimize cluster resource usage
+- **Automatic Management**: Pod lifecycle is fully automatic - no manual intervention needed
+- **Retry Support**: Like direct services, proxy connections support automatic retry with exponential backoff
+- **Context Overrides**: Each proxy service can use different cluster contexts/namespaces
+- **Proxy Pod Location**: The proxy pod itself is created in the configured proxy_pod_context/proxy_pod_namespace
+- **Network Requirements**: The proxy pod must have network access to the target GCP resources (VPC peering, etc.)
 
 ## Automatic Retry Feature
 
@@ -271,6 +453,8 @@ services:
 4. **Test connectivity**: After starting a port forward, test it with `curl localhost:<port>` or your preferred tool
 5. **Unreliable connections**: For flaky networks or frequently restarting pods, keep the default infinite retries enabled
 6. **Development environment**: Consider setting `max_retries: 3` for development services that may not always be available
+7. **GCP Resources**: Use proxy services for CloudSQL, MemoryStore, and other GCP resources with private IPs
+8. **Unified Management**: Both direct services and proxy services work identically in the UI - start/stop them the same way
 
 ## Troubleshooting
 
@@ -298,7 +482,23 @@ If retries are too aggressive for your use case:
 Ensure you have proper RBAC permissions in the cluster:
 ```bash
 kubectl auth can-i get services -n <namespace>
+kubectl auth can-i create pods -n <namespace>  # For proxy services
 ```
+
+### Proxy pod fails to create
+If proxy services show errors:
+- Check RBAC permissions: `kubectl auth can-i create pods -n <namespace>`
+- Verify the namespace exists: `kubectl get namespace <namespace>`
+- Check pod status manually: `kubectl get pod kubefwd-proxy -n <namespace>`
+- View pod logs: `kubectl logs kubefwd-proxy -n <namespace> --all-containers`
+- Verify network connectivity from cluster to GCP resource (VPC peering, firewall rules)
+- Use `--debug` flag to see the exact pod spec being created
+
+### Proxy connection works but can't reach GCP resource
+- Verify the target IP/hostname is correct (use `gcloud` commands to get current IPs)
+- Check VPC peering between GKE and GCP resource
+- Verify firewall rules allow traffic from GKE cluster to the GCP resource
+- Test connectivity from within the cluster: `kubectl run -it --rm debug --image=alpine --restart=Never -- sh` then `nc -zv <target_host> <target_port>`
 
 ## Development
 
@@ -306,14 +506,18 @@ kubectl auth can-i get services -n <namespace>
 
 ```
 kubefwd/
-├── main.go                 # Application entry point
-├── config.go               # Configuration parsing
-├── portforward.go          # Port forward management
-├── selection_view.go       # Service selection screen
-├── management_view.go      # Port forward control screen
-├── config.example.yaml     # Example configuration
-├── README.md               # Documentation
-└── go.mod                  # Go dependencies
+├── main.go                       # Application entry point
+├── app_model.go                  # Root application model
+├── config.go                     # Configuration parsing
+├── portforward.go                # Direct port forward management
+├── proxypod.go                   # Proxy pod and forward management
+├── context_selection_view.go     # Context switching screen
+├── confirmation_view.go          # Context change confirmation
+├── preset_selection_view.go      # Preset selection screen
+├── management_view.go            # Port forward control screen
+├── config.example.yaml           # Example configuration
+├── README.md                     # Documentation
+└── go.mod                        # Go dependencies
 ```
 
 This project uses:

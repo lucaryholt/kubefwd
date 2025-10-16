@@ -18,6 +18,18 @@ namespace: default
 # Uses exponential backoff: 1s, 2s, 4s, 8s, ... up to 60s max
 max_retries: -1
 
+# Optional: Proxy pod configuration for GCP services (CloudSQL, MemoryStore, etc.)
+# The proxy pod name (default: kubefwd-proxy)
+proxy_pod_name: kubefwd-proxy
+# The container image for proxy pod (default: alpine/socat:latest)
+proxy_pod_image: alpine/socat:latest
+# Optional: Context where the proxy pod should be created (default: uses cluster_context)
+# Useful if you want the proxy pod in a different cluster that has VPC access to GCP resources
+# proxy_pod_context: gke_my-project_us-central1_proxy-cluster
+# Optional: Namespace where the proxy pod should be created (default: uses namespace)
+# Useful for separating proxy infrastructure from application services
+# proxy_pod_namespace: proxy-namespace
+
 # Optional: Alternative cluster contexts for quick switching
 # Press 'c' in the management view to switch between contexts
 alternative_contexts:
@@ -94,4 +106,47 @@ services:
     local_port: 8081
     selected_by_default: false
     max_retries: 5  # Override global retry setting for this service
+
+# Optional: Proxy services for GCP resources that need a proxy pod
+# These services create a shared proxy pod in the cluster to relay traffic
+# to GCP services like CloudSQL, MemoryStore, etc.
+proxy_services:
+  # Example: CloudSQL connection
+  - name: CloudSQL Production
+    target_host: 10.1.2.3  # Private IP of CloudSQL instance
+    target_port: 5432
+    local_port: 5432
+    selected_by_default: false
+    # Uses global context, namespace, and max_retries
+
+  # Example: CloudSQL with different local port
+  - name: CloudSQL Staging
+    target_host: 10.1.2.4
+    target_port: 5432
+    local_port: 5433  # Different local port to avoid conflicts
+    selected_by_default: false
+
+  # Example: Redis MemoryStore
+  - name: Redis MemoryStore
+    target_host: 10.1.3.5  # Private IP of MemoryStore instance
+    target_port: 6379
+    local_port: 6380
+    selected_by_default: true
+
+  # Example: MySQL CloudSQL
+  - name: MySQL Production
+    target_host: 10.1.4.6
+    target_port: 3306
+    local_port: 3306
+    selected_by_default: false
+
+  # Example with context/namespace overrides
+  - name: CloudSQL Dev
+    target_host: 10.2.1.1
+    target_port: 5432
+    local_port: 5434
+    selected_by_default: false
+    context: gke_my-project_us-central1_dev-cluster  # Override cluster context
+    namespace: dev-namespace                          # Override namespace
+    max_retries: 3                                    # Override retry setting
 

@@ -29,6 +29,11 @@ type Config struct {
 	AlternativeContexts  []AlternativeContext `yaml:"alternative_contexts,omitempty"`
 	Presets              []Preset             `yaml:"presets,omitempty"`
 	Services             []Service            `yaml:"services"`
+	ProxyPodName         string               `yaml:"proxy_pod_name,omitempty"`      // Name for the shared proxy pod (default: kubefwd-proxy)
+	ProxyPodImage        string               `yaml:"proxy_pod_image,omitempty"`     // Container image for proxy pod (default: alpine/socat:latest)
+	ProxyPodContext      string               `yaml:"proxy_pod_context,omitempty"`   // Context where proxy pod is created (default: cluster_context)
+	ProxyPodNamespace    string               `yaml:"proxy_pod_namespace,omitempty"` // Namespace where proxy pod is created (default: namespace)
+	ProxyServices        []ProxyService       `yaml:"proxy_services,omitempty"`      // Proxy services for GCP connections
 }
 
 // Service represents a single service configuration
@@ -41,6 +46,42 @@ type Service struct {
 	Context           string `yaml:"context,omitempty"`           // Optional: override cluster context
 	Namespace         string `yaml:"namespace,omitempty"`         // Optional: override namespace
 	MaxRetries        *int   `yaml:"max_retries,omitempty"`       // Optional: override global max_retries
+}
+
+// ProxyService represents a proxy pod service configuration
+type ProxyService struct {
+	Name              string `yaml:"name"`
+	TargetHost        string `yaml:"target_host"`
+	TargetPort        int    `yaml:"target_port"`
+	LocalPort         int    `yaml:"local_port"`
+	SelectedByDefault bool   `yaml:"selected_by_default"`
+	Context           string `yaml:"context,omitempty"`     // Optional: override cluster context
+	Namespace         string `yaml:"namespace,omitempty"`   // Optional: override namespace
+	MaxRetries        *int   `yaml:"max_retries,omitempty"` // Optional: override global max_retries
+}
+
+// GetContext returns the service-specific context or falls back to global context
+func (ps *ProxyService) GetContext(globalContext string) string {
+	if ps.Context != "" {
+		return ps.Context
+	}
+	return globalContext
+}
+
+// GetNamespace returns the service-specific namespace or falls back to global namespace
+func (ps *ProxyService) GetNamespace(globalNamespace string) string {
+	if ps.Namespace != "" {
+		return ps.Namespace
+	}
+	return globalNamespace
+}
+
+// GetMaxRetries returns the service-specific max retries or falls back to global max retries
+func (ps *ProxyService) GetMaxRetries(globalMaxRetries int) int {
+	if ps.MaxRetries != nil {
+		return *ps.MaxRetries
+	}
+	return globalMaxRetries
 }
 
 // GetContext returns the service-specific context or falls back to global context
@@ -84,6 +125,20 @@ func LoadConfig(filepath string) (*Config, error) {
 		config.MaxRetries = -1 // Default to infinite retries
 	}
 
+	// Set default proxy pod configuration
+	if config.ProxyPodName == "" {
+		config.ProxyPodName = "kubefwd-proxy"
+	}
+	if config.ProxyPodImage == "" {
+		config.ProxyPodImage = "alpine/socat:latest"
+	}
+	if config.ProxyPodContext == "" {
+		config.ProxyPodContext = config.ClusterContext
+	}
+	if config.ProxyPodNamespace == "" {
+		config.ProxyPodNamespace = config.Namespace
+	}
+
 	// Validate configuration
 	if config.ClusterContext == "" {
 		return nil, fmt.Errorf("cluster_context is required")
@@ -91,8 +146,8 @@ func LoadConfig(filepath string) (*Config, error) {
 	if config.Namespace == "" {
 		return nil, fmt.Errorf("namespace is required")
 	}
-	if len(config.Services) == 0 {
-		return nil, fmt.Errorf("at least one service must be defined")
+	if len(config.Services) == 0 && len(config.ProxyServices) == 0 {
+		return nil, fmt.Errorf("at least one service or proxy service must be defined")
 	}
 
 	// Validate each service
@@ -111,9 +166,30 @@ func LoadConfig(filepath string) (*Config, error) {
 		}
 	}
 
+	// Validate each proxy service
+	for i, pxSvc := range config.ProxyServices {
+		if pxSvc.Name == "" {
+			return nil, fmt.Errorf("proxy_service %d: name is required", i)
+		}
+		if pxSvc.TargetHost == "" {
+			return nil, fmt.Errorf("proxy_service %d (%s): target_host is required", i, pxSvc.Name)
+		}
+		if pxSvc.TargetPort <= 0 || pxSvc.TargetPort > 65535 {
+			return nil, fmt.Errorf("proxy_service %d (%s): invalid target_port", i, pxSvc.Name)
+		}
+		if pxSvc.LocalPort <= 0 || pxSvc.LocalPort > 65535 {
+			return nil, fmt.Errorf("proxy_service %d (%s): invalid local_port", i, pxSvc.Name)
+		}
+	}
+
 	// Sort services alphabetically by name
 	sort.Slice(config.Services, func(i, j int) bool {
 		return config.Services[i].Name < config.Services[j].Name
+	})
+
+	// Sort proxy services alphabetically by name
+	sort.Slice(config.ProxyServices, func(i, j int) bool {
+		return config.ProxyServices[i].Name < config.ProxyServices[j].Name
 	})
 
 	return &config, nil

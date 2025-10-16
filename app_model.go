@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"os"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -12,6 +15,7 @@ const (
 	ScreenContextSelection
 	ScreenConfirmation
 	ScreenPresetSelection
+	ScreenProxySelection
 )
 
 // AppModel is the root model that manages screen transitions
@@ -22,6 +26,7 @@ type AppModel struct {
 	contextModel        ContextSelectionModel
 	confirmModel        ConfirmationModel
 	presetModel         PresetSelectionModel
+	proxySelectionModel ProxySelectionModel
 	targetContextOption ContextOption
 }
 
@@ -48,6 +53,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateConfirmation(msg)
 	case ScreenPresetSelection:
 		return m.updatePresetSelection(msg)
+	case ScreenProxySelection:
+		return m.updateProxySelection(msg)
 	}
 	return m, nil
 }
@@ -68,6 +75,13 @@ func (m AppModel) updateManagement(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.screen = ScreenPresetSelection
 				m.presetModel = NewPresetSelectionModel(m.config)
 				return m, m.presetModel.Init()
+			}
+		} else if keyMsg.String() == "r" {
+			// Only allow proxy selection if there are proxy services
+			if len(m.config.ProxyServices) > 0 && m.managementModel.proxyPodManager != nil {
+				m.screen = ScreenProxySelection
+				m.proxySelectionModel = NewProxySelectionModel(m.config.ProxyServices, m.managementModel.proxyPodManager)
+				return m, m.proxySelectionModel.Init()
 			}
 		}
 	}
@@ -118,9 +132,12 @@ func (m AppModel) updateConfirmation(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) switchContext() (tea.Model, tea.Cmd) {
-	// Stop all running port forwards
+	// Stop all running port forwards and proxy forwards
 	for _, pf := range m.managementModel.portForwards {
 		pf.Stop()
+	}
+	for _, pxf := range m.managementModel.proxyForwards {
+		pxf.Stop()
 	}
 
 	// Update the config with new context and name
@@ -168,10 +185,45 @@ func (m AppModel) applyPreset() (tea.Model, tea.Cmd) {
 		presetServiceMap[serviceName] = true
 	}
 
-	// Find and start matching services
+	// Find and start matching direct services
 	for i, svc := range m.managementModel.services {
 		if presetServiceMap[svc.Name] {
 			m.managementModel.portForwards[i].Start()
+		}
+	}
+
+	// Return to management screen
+	m.screen = ScreenManagement
+	return m, nil
+}
+
+func (m AppModel) updateProxySelection(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updatedModel, cmd := m.proxySelectionModel.Update(msg)
+	m.proxySelectionModel = updatedModel.(ProxySelectionModel)
+
+	if m.proxySelectionModel.cancelled {
+		// Return to management without changes
+		m.screen = ScreenManagement
+		return m, nil
+	}
+
+	if m.proxySelectionModel.confirmed {
+		// Apply the selection
+		return m.applyProxySelection()
+	}
+
+	return m, cmd
+}
+
+func (m AppModel) applyProxySelection() (tea.Model, tea.Cmd) {
+	selectedServices := m.proxySelectionModel.GetSelectedServices()
+	
+	// Apply selection to management model
+	if err := m.managementModel.ApplyProxySelection(selectedServices); err != nil {
+		// TODO: Show error to user
+		// For now, just log it if debug mode is on
+		if debugMode {
+			fmt.Fprintf(os.Stderr, "[DEBUG] Failed to apply proxy selection: %v\n", err)
 		}
 	}
 
@@ -190,6 +242,8 @@ func (m AppModel) View() string {
 		return m.confirmModel.View()
 	case ScreenPresetSelection:
 		return m.presetModel.View()
+	case ScreenProxySelection:
+		return m.proxySelectionModel.View()
 	}
 	return ""
 }
