@@ -5,6 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // ScreenType represents the current screen being displayed
@@ -28,6 +29,8 @@ type AppModel struct {
 	presetModel         PresetSelectionModel
 	proxySelectionModel ProxySelectionModel
 	targetContextOption ContextOption
+	width               int
+	height              int
 }
 
 // NewAppModel creates a new app model
@@ -44,6 +47,14 @@ func (m AppModel) Init() tea.Cmd {
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle window size changes globally
+	if msg, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = msg.Width
+		m.height = msg.Height
+		m.managementModel.width = msg.Width
+		m.managementModel.height = msg.Height
+	}
+
 	switch m.screen {
 	case ScreenManagement:
 		return m.updateManagement(msg)
@@ -243,8 +254,40 @@ func (m AppModel) View() string {
 	case ScreenPresetSelection:
 		return m.presetModel.View()
 	case ScreenProxySelection:
-		return m.proxySelectionModel.View()
+		// Render proxy selection as modal overlay
+		return m.renderProxySelectionModal()
 	}
 	return ""
+}
+
+func (m AppModel) renderProxySelectionModal() string {
+	// Get modal content
+	modalContent := m.proxySelectionModel.View()
+
+	// Create modal box with border and padding
+	modalStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("205")).
+		Padding(1, 2).
+		Background(lipgloss.Color("235")).
+		MaxWidth(70)
+
+	modal := modalStyle.Render(modalContent)
+
+	// Center the modal on the screen
+	if m.width > 0 && m.height > 0 {
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			modal,
+			lipgloss.WithWhitespaceChars(" "),
+			lipgloss.WithWhitespaceForeground(lipgloss.Color("240")),
+		)
+	}
+
+	// Fallback if dimensions not available
+	return modal
 }
 

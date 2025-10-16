@@ -193,25 +193,29 @@ nano ~/.kubefwd.yaml
 - `d`: Start all services marked with `selected_by_default: true`
 - `a`: Start all services
 - `x`: Stop all services
+- `o`: Toggle display of context/namespace override details
 - `p`: Apply a preset (if presets are configured)
 - `c`: Change cluster context (if alternative contexts are configured)
+- `r`: Manage proxy services (if proxy services are configured)
 - `q`: Stop all services and quit
 
 **Status Indicators:**
-- `[RUNNING]` (green): Port forward is active
-- `[STARTING]` (orange): Port forward is initializing
-- `[STOPPED]` (gray): Port forward is not active
-- `[RETRYING X/Y]` (orange): Port forward failed and is retrying (X = current attempt, Y = max attempts)
-- `[RETRYING X]` (orange): Port forward failed and is retrying infinitely (X = current attempt)
-- `[ERROR]` (red): Port forward encountered an error (max retries exceeded or retries disabled)
+- `●` (green): Port forward is active and running
+- `◐` (orange): Port forward is initializing/starting
+- `○` (gray): Port forward is stopped
+- `↻ X/Y` (orange): Port forward failed and is retrying (X = current attempt, Y = max attempts)
+- `↻ X` (orange): Port forward failed and is retrying infinitely (X = current attempt)
+- `✗` (red): Port forward encountered an error (max retries exceeded or retries disabled)
 
 **Display Information:**
 - ⚡ Direct services (kubectl port-forward to Kubernetes services)
 - ☁️ Proxy services (proxy pod connections to GCP resources)
-- Services marked as default show a ★ (star) indicator
-- Services with overridden context/namespace show `[ctx: name]` or `[ns: name]` tags
+- Services marked as default show a `★` (star) indicator
+- Services with context/namespace overrides show a `⚙` (gear) icon
+- Press `o` to toggle detailed override information `[ctx: name]` and/or `[ns: name]`
 - Error messages are displayed below failed services with full kubectl command for debugging
 - Proxy pod status shows creation state and number of active connections
+- UI automatically adapts to your terminal width for optimal display
 
 ### Context Switching
 
@@ -299,42 +303,51 @@ gcloud memcache instances describe INSTANCE_NAME --region=REGION --format="value
 
 ### Split-View Interface
 
-The main management view displays proxy services in a separate pane:
+The main management view displays proxy services in a separate pane with a responsive layout:
 
 ```
-┌─────────────────────────────────────┬──────────────────────┐
-│ kubefwd                              │ Proxy Services       │
-│                                      │                      │
-│ Cluster: Production                  │ Pod: [READY] (2)     │
-│ Namespace: default                   │                      │
-│                                      │ [✓] CloudSQL Staging │
-│ ▶ ★ API Server    [RUNNING] :8080   │ [✓] Redis Store      │
-│   ★ Database      [STOPPED] :5432   │ [ ] CloudSQL Prod    │
-│     Redis Cache   [STOPPED] :6379   │ [ ] MySQL Prod       │
-│                                      │                      │
-│ ↑/↓: navigate • r: proxy • q: quit  │ Press 'r' to manage  │
-└─────────────────────────────────────┴──────────────────────┘
+┌────────────────────────────────────────────────┬─────────────────────────┐
+│ kubefwd                                         │ Proxy Services          │
+│                                                 │                         │
+│ Cluster: Production                             │ Pod: ● Ready (2)        │
+│ Namespace: default                              │                         │
+│                                                 │ [✓] CloudSQL Staging ●  │
+│ ▶ ★ API Server           ● :8080 → api:8080    │ [✓] Redis Store ●       │
+│   ★ Database             ○ :5432 → db:5432     │ [ ] CloudSQL Prod       │
+│   ⚙ Redis Cache          ○ :6379 → redis:6379  │ [ ] MySQL Prod          │
+│                                                 │                         │
+│ ↑↓/jk:nav • s:toggle • d:def • a:all • x:stop  │ Press 'r' to manage     │
+│ p:presets • c:context • r:proxy • q:quit       │                         │
+└────────────────────────────────────────────────┴─────────────────────────┘
 ```
 
-**Left Pane**: Interactive direct Kubernetes service management  
-**Right Pane**: Read-only proxy service status overview
+**Left Pane**: Interactive direct Kubernetes service management (70% width)
+**Right Pane**: Read-only proxy service status overview (30% width)
+**Responsive**: Layout automatically adjusts to your terminal width
 
 ### Using Proxy Services
 
-**Step 1: Press `r` to open proxy selection**
+**Step 1: Press `r` to open proxy selection modal**
+
+A centered modal dialog appears over the main view:
 
 ```
-Select Proxy Services
-
-  [ ] CloudSQL Production       :5432 -> 10.1.2.3:5432
-  [✓] CloudSQL Staging          :5433 -> 10.1.2.4:5432
-  [✓] Redis MemoryStore         :6380 -> 10.1.3.5:6379
-  [ ] MySQL Production          :3306 -> 10.1.4.6:3306
-
-Currently active: CloudSQL Staging, Redis MemoryStore
-
-space: toggle • enter: apply changes • esc: cancel
+╭─────────────────────────────────────────────────────────╮
+│ Select Proxy Services • ● Ready (2)                     │
+│                                                          │
+│   [ ]★ CloudSQL Production     :5432 → 10.1.2.3:5432    │
+│   [✓]  CloudSQL Staging        :5433 → 10.1.2.4:5432    │
+│ ▶ [✓]★ Redis MemoryStore       :6380 → 10.1.3.5:6379    │
+│   [ ]  MySQL Production        :3306 → 10.1.4.6:3306    │
+│                                                          │
+│ space:toggle • enter:apply • esc:cancel                 │
+╰─────────────────────────────────────────────────────────╯
 ```
+
+**Default Selection Behavior:**
+- **First time**: Services with `selected_by_default: true` are pre-checked (marked with ★)
+- **Editing**: Currently active services are pre-checked
+- Services marked as default always show a ★ indicator for reference
 
 **Step 2: Select/deselect services**
 - Use `↑`/`↓` or `j`/`k` to navigate
@@ -356,11 +369,12 @@ space: toggle • enter: apply changes • esc: cancel
 ### Proxy Pod Status
 
 The management view shows the proxy pod status when proxy services are configured:
-- `[NOT CREATED]`: Pod hasn't been created yet
-- `[CREATING]`: Pod is being created and starting
-- `[READY]`: Pod is running and ready for connections
-- `[ERROR]`: Pod creation or readiness check failed
+- `○ Not Created`: Pod hasn't been created yet
+- `◐ Creating`: Pod is being created and starting
+- `● Ready`: Pod is running and ready for connections
+- `✗ Error`: Pod creation or readiness check failed
 - Active connection count shows how many proxy services are currently using the pod
+- Individual proxy service status shown with `●` (running) or `✗` (error) next to the service name
 
 ### Proxy Pod Context and Namespace
 
@@ -442,8 +456,44 @@ services:
 
 - **Manual stop prevents retry**: When you manually stop a service (press `s` or `x`), it will not automatically retry
 - **Starting resets retry count**: Manually starting a service in retry/error state resets the retry counter
-- **UI indication**: Services in retry mode show `[RETRYING X/Y]` or `[RETRYING X]` status with retry attempt count
+- **UI indication**: Services in retry mode show `↻ X/Y` or `↻ X` status with retry attempt count
 - **Error messages**: After max retries exceeded, full error details are displayed including the number of retry attempts
+
+## User Interface
+
+### Responsive Layout
+
+The UI automatically adapts to your terminal size:
+- **Dynamic Width**: The interface expands to use your full terminal width for better readability
+- **Split View**: When proxy services are configured, the view splits 70/30 between direct services and proxy status
+- **Equal Heights**: The divider between panes extends the full height of the terminal
+- **Minimum Widths**: The layout maintains minimum widths to ensure usability on smaller terminals
+
+### Compact Status Display
+
+Services use color-coded symbols instead of verbose text:
+- **●** (green) = Running
+- **◐** (orange) = Starting
+- **○** (gray) = Stopped
+- **↻ X** (orange) = Retrying (shows attempt count)
+- **✗** (red) = Error
+
+This compact display allows more services to fit on screen without line wrapping.
+
+### Context and Namespace Overrides
+
+Services with per-service context or namespace overrides show a **⚙** (gear) icon:
+- By default, override details are hidden to save space
+- Press **`o`** to toggle the display of full override information
+- When shown, overrides appear as `[ctx: name]` or `[ns: name]` tags next to the service
+
+### Modal Dialogs
+
+Some screens (like proxy service selection) appear as centered modal overlays:
+- Modal appears on top of the main view
+- Main view remains visible in the background
+- Easy to see your current state while making selections
+- Press `esc` or `q` to close without changes
 
 ## Tips
 
@@ -455,6 +505,8 @@ services:
 6. **Development environment**: Consider setting `max_retries: 3` for development services that may not always be available
 7. **GCP Resources**: Use proxy services for CloudSQL, MemoryStore, and other GCP resources with private IPs
 8. **Unified Management**: Both direct services and proxy services work identically in the UI - start/stop them the same way
+9. **Override Visibility**: Use `o` to toggle override details - keep them hidden for a cleaner view, show them when you need context
+10. **Wide Terminals**: The UI takes advantage of wide terminals - expand your window for the best experience
 
 ## Troubleshooting
 

@@ -50,6 +50,9 @@ type ManagementModel struct {
 	cursor          int
 	config          *Config
 	quitting        bool
+	width           int
+	height          int
+	showOverrides   bool // Toggle for showing context/namespace override details
 }
 
 // tickMsg is sent periodically to update the view
@@ -161,6 +164,10 @@ func (m ManagementModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					pf.Stop()
 				}
 			}
+
+		case "o":
+			// Toggle override info display
+			m.showOverrides = !m.showOverrides
 		}
 
 	case tickMsg:
@@ -176,17 +183,76 @@ func (m ManagementModel) View() string {
 		return "Stopping all port forwards...\n"
 	}
 
+	// Calculate pane widths
+	leftWidth, rightWidth := m.calculatePaneWidths()
+
 	// Build left pane (direct services)
-	leftPane := m.renderLeftPane()
+	leftPane := m.renderLeftPane(leftWidth)
 
 	// Build right pane (proxy services)
-	rightPane := m.renderRightPane()
+	rightPane := m.renderRightPane(rightWidth)
 
-	// Use lipgloss to create split view
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	// Use lipgloss to create split view with equal heights
+	if rightPane != "" {
+		// Make sure both panes have the same height
+		leftHeight := lipgloss.Height(leftPane)
+		rightHeight := lipgloss.Height(rightPane)
+		maxHeight := leftHeight
+		if rightHeight > maxHeight {
+			maxHeight = rightHeight
+		}
+
+		// Set explicit heights for both panes
+		leftStyle := lipgloss.NewStyle().Height(maxHeight)
+		rightStyle := lipgloss.NewStyle().Height(maxHeight)
+
+		return lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(leftPane), rightStyle.Render(rightPane))
+	}
+
+	return leftPane
 }
 
-func (m ManagementModel) renderLeftPane() string {
+// calculatePaneWidths returns the left and right pane widths based on terminal size
+func (m ManagementModel) calculatePaneWidths() (int, int) {
+	// Default minimum widths
+	minLeftWidth := 60
+	minRightWidth := 30
+
+	// If no proxy services, use full width for left pane
+	if len(m.proxyServices) == 0 {
+		if m.width > 0 {
+			return m.width - 4, 0 // Subtract padding
+		}
+		return 80, 0
+	}
+
+	// If terminal width is available, calculate 70/30 split
+	if m.width > 0 {
+		leftWidth := int(float64(m.width) * 0.7)
+		rightWidth := int(float64(m.width) * 0.3)
+
+		// Apply minimum constraints
+		if leftWidth < minLeftWidth {
+			leftWidth = minLeftWidth
+		}
+		if rightWidth < minRightWidth {
+			rightWidth = minRightWidth
+		}
+
+		// Adjust if total exceeds available width
+		total := leftWidth + rightWidth
+		if total > m.width {
+			leftWidth = m.width - rightWidth
+		}
+
+		return leftWidth, rightWidth
+	}
+
+	// Fallback to defaults
+	return 80, 35
+}
+
+func (m ManagementModel) renderLeftPane(width int) string {
 	var b strings.Builder
 
 	// Title
@@ -220,18 +286,34 @@ func (m ManagementModel) renderLeftPane() string {
 			defaultIndicator = "★"
 		}
 
-		line := fmt.Sprintf("%s%s %-20s %s :%d -> %s:%d",
-			cursor, defaultIndicator, svc.Name, statusText, svc.LocalPort, svc.ServiceName, svc.RemotePort)
+		// Truncate service name if too long
+		displayName := svc.Name
+		if len(displayName) > 18 {
+			displayName = displayName[:17] + "…"
+		}
 
-		// Show context/namespace if different from global
-		overrides := ""
-		if svc.Context != "" && svc.Context != m.config.ClusterContext {
-			overrides += fmt.Sprintf(" [ctx: %s]", svc.Context)
+		// Check if service has overrides
+		hasOverrides := (svc.Context != "" && svc.Context != m.config.ClusterContext) ||
+			(svc.Namespace != "" && svc.Namespace != m.config.Namespace)
+
+		// Show override indicator
+		overrideIndicator := " "
+		if hasOverrides {
+			overrideIndicator = "⚙"
 		}
-		if svc.Namespace != "" && svc.Namespace != m.config.Namespace {
-			overrides += fmt.Sprintf(" [ns: %s]", svc.Namespace)
-		}
-		if overrides != "" {
+
+		line := fmt.Sprintf("%s%s%s %-18s %s :%d → %s:%d",
+			cursor, defaultIndicator, overrideIndicator, displayName, statusText, svc.LocalPort, svc.ServiceName, svc.RemotePort)
+
+		// Show detailed context/namespace info only if toggle is on
+		if m.showOverrides && hasOverrides {
+			overrides := ""
+			if svc.Context != "" && svc.Context != m.config.ClusterContext {
+				overrides += fmt.Sprintf(" [ctx: %s]", svc.Context)
+			}
+			if svc.Namespace != "" && svc.Namespace != m.config.Namespace {
+				overrides += fmt.Sprintf(" [ns: %s]", svc.Namespace)
+			}
 			line += helpStyle.Render(overrides)
 		}
 
@@ -240,7 +322,12 @@ func (m ManagementModel) renderLeftPane() string {
 		// Show error message if present
 		if status == StatusError && errMsg != "" {
 			b.WriteString("\n")
-			errorLines := wrapText(errMsg, 70)
+			// Calculate wrap width based on pane width
+			wrapWidth := width - 10 // Account for indentation and padding
+			if wrapWidth < 40 {
+				wrapWidth = 40
+			}
+			errorLines := wrapText(errMsg, wrapWidth)
 			for _, errorLine := range errorLines {
 				b.WriteString(fmt.Sprintf("     %s", statusErrorStyle.Render(errorLine)))
 				b.WriteString("\n")
@@ -250,32 +337,38 @@ func (m ManagementModel) renderLeftPane() string {
 		b.WriteString("\n")
 	}
 
-	// Help text
+	// Help text - split into two rows
 	b.WriteString("\n")
-	helpText := "↑/↓: navigate • enter/s: toggle • d: defaults • a: start all • x: stop all"
+	
+	// Row 1: Navigation and service controls
+	helpRow1 := "↑↓/jk:nav • s:toggle • d:def • a:all • x:stop • o:overrides"
+	b.WriteString(helpStyle.Render(helpRow1))
+	b.WriteString("\n")
+	
+	// Row 2: Mode switches and quit
+	helpRow2 := ""
 	if len(m.config.Presets) > 0 {
-		helpText += " • p: presets"
+		helpRow2 += "p:presets • "
 	}
 	if len(m.config.AlternativeContexts) > 0 {
-		helpText += " • c: context"
+		helpRow2 += "c:context • "
 	}
 	if len(m.proxyServices) > 0 {
-		helpText += " • r: proxy"
+		helpRow2 += "r:proxy • "
 	}
-	helpText += " • q: quit"
+	helpRow2 += "q:quit"
+	b.WriteString(helpStyle.Render(helpRow2))
 
-	b.WriteString(helpStyle.Render(helpText))
-
-	// Render in a styled box
+	// Render in a styled box with dynamic width
 	leftStyle := lipgloss.NewStyle().
-		Width(80).
+		Width(width).
 		PaddingLeft(2).
 		PaddingRight(2)
 
 	return leftStyle.Render(b.String())
 }
 
-func (m ManagementModel) renderRightPane() string {
+func (m ManagementModel) renderRightPane(width int) string {
 	if len(m.proxyServices) == 0 {
 		return ""
 	}
@@ -298,7 +391,12 @@ func (m ManagementModel) renderRightPane() string {
 		
 		// Show full error message wrapped to fit pane
 		if podStatus == ProxyPodStatusError && podErr != "" {
-			errorLines := wrapText(podErr, 30)
+			// Calculate wrap width based on pane width
+			wrapWidth := width - 8 // Account for padding and border
+			if wrapWidth < 20 {
+				wrapWidth = 20
+			}
+			errorLines := wrapText(podErr, wrapWidth)
 			for _, line := range errorLines {
 				b.WriteString(statusErrorStyle.Render(line))
 				b.WriteString("\n")
@@ -323,14 +421,24 @@ func (m ManagementModel) renderRightPane() string {
 				status, _ := pxf.GetStatus()
 				switch status {
 				case StatusRunning:
-					statusText = statusRunningStyle.Render("[RUN]")
+					statusText = statusRunningStyle.Render("●")
 				case StatusError:
-					statusText = statusErrorStyle.Render("[ERR]")
+					statusText = statusErrorStyle.Render("✗")
 				}
 			}
 		}
 
-		line := fmt.Sprintf("%s %s", checkbox, pxSvc.Name)
+		// Truncate service name if too long for right pane
+		displayName := pxSvc.Name
+		maxNameWidth := width - 12 // Account for checkbox, padding, and status
+		if maxNameWidth < 10 {
+			maxNameWidth = 10
+		}
+		if len(displayName) > maxNameWidth {
+			displayName = displayName[:maxNameWidth-1] + "…"
+		}
+
+		line := fmt.Sprintf("%s %s", checkbox, displayName)
 		if statusText != "" {
 			line += " " + statusText
 		}
@@ -342,9 +450,9 @@ func (m ManagementModel) renderRightPane() string {
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("Press 'r' to manage"))
 
-	// Render in a styled box
+	// Render in a styled box with dynamic width
 	rightStyle := lipgloss.NewStyle().
-		Width(35).
+		Width(width).
 		PaddingLeft(2).
 		BorderLeft(true).
 		BorderStyle(lipgloss.NormalBorder()).
@@ -355,41 +463,39 @@ func (m ManagementModel) renderRightPane() string {
 
 func (m ManagementModel) formatStatus(status PortForwardStatus, retrying bool, retryAttempt int, maxRetries int) string {
 	if retrying {
-		retryText := fmt.Sprintf("[RETRYING %d", retryAttempt)
-		if maxRetries == -1 {
-			retryText += "]"
-		} else {
-			retryText += fmt.Sprintf("/%d]", maxRetries)
+		retryText := fmt.Sprintf("↻ %d", retryAttempt)
+		if maxRetries != -1 {
+			retryText += fmt.Sprintf("/%d", maxRetries)
 		}
 		return statusRetryingStyle.Render(retryText)
 	}
 	
 	switch status {
 	case StatusRunning:
-		return statusRunningStyle.Render("[RUNNING]")
+		return statusRunningStyle.Render("●")
 	case StatusStarting:
-		return statusStartingStyle.Render("[STARTING]")
+		return statusStartingStyle.Render("◐")
 	case StatusError:
-		return statusErrorStyle.Render("[ERROR]")
+		return statusErrorStyle.Render("✗")
 	case StatusStopped:
-		return statusStoppedStyle.Render("[STOPPED]")
+		return statusStoppedStyle.Render("○")
 	default:
-		return statusStoppedStyle.Render("[UNKNOWN]")
+		return statusStoppedStyle.Render("?")
 	}
 }
 
 func (m ManagementModel) formatProxyPodStatus(status ProxyPodStatus) string {
 	switch status {
 	case ProxyPodStatusReady:
-		return statusRunningStyle.Render("[READY]")
+		return statusRunningStyle.Render("● Ready")
 	case ProxyPodStatusCreating:
-		return statusStartingStyle.Render("[CREATING]")
+		return statusStartingStyle.Render("◐ Creating")
 	case ProxyPodStatusError:
-		return statusErrorStyle.Render("[ERROR]")
+		return statusErrorStyle.Render("✗ Error")
 	case ProxyPodStatusNotCreated:
-		return statusStoppedStyle.Render("[NOT CREATED]")
+		return statusStoppedStyle.Render("○ Not Created")
 	default:
-		return statusStoppedStyle.Render("[UNKNOWN]")
+		return statusStoppedStyle.Render("? Unknown")
 	}
 }
 
@@ -445,4 +551,6 @@ func wrapText(text string, width int) []string {
 
 	return lines
 }
+
+
 

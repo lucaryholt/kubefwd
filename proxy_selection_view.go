@@ -34,14 +34,24 @@ func NewProxySelectionModel(proxyServices []ProxyService, podManager *ProxyPodMa
 	activeServices := make(map[string]bool)
 	
 	// Mark currently active services
+	hasActiveServices := false
 	if podManager != nil {
 		for _, name := range podManager.GetActiveServiceNames() {
 			activeServices[name] = true
+			hasActiveServices = true
 		}
-		
-		// Pre-select active services
-		for i, svc := range proxyServices {
+	}
+	
+	// Pre-select services based on context
+	for i, svc := range proxyServices {
+		if hasActiveServices {
+			// If there are active services, pre-select them
 			if activeServices[svc.Name] {
+				selected[i] = true
+			}
+		} else {
+			// If no active services, pre-select those marked as default
+			if svc.SelectedByDefault {
 				selected[i] = true
 			}
 		}
@@ -107,31 +117,19 @@ func (m ProxySelectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m ProxySelectionModel) View() string {
 	var b strings.Builder
 
-	// Title
-	b.WriteString(titleStyle.Render("Select Proxy Services"))
-	b.WriteString("\n\n")
-
-	// Pod status
+	// Title with pod status inline
+	title := "Select Proxy Services"
 	if m.podManager != nil {
-		podStatus, podErr, activeCount := m.podManager.GetStatus()
+		podStatus, _, activeCount := m.podManager.GetStatus()
 		podStatusText := m.formatProxyPodStatus(podStatus)
-		b.WriteString(fmt.Sprintf("Pod Status: %s", podStatusText))
 		if activeCount > 0 {
-			b.WriteString(fmt.Sprintf(" (%d active)", activeCount))
+			title += fmt.Sprintf(" • %s (%d)", podStatusText, activeCount)
+		} else {
+			title += fmt.Sprintf(" • %s", podStatusText)
 		}
-		b.WriteString("\n")
-		
-		// Show error message if present
-		if podStatus == ProxyPodStatusError && podErr != "" {
-			errorLines := wrapText(podErr, 70)
-			for _, line := range errorLines {
-				b.WriteString("  ")
-				b.WriteString(statusErrorStyle.Render(line))
-				b.WriteString("\n")
-			}
-		}
-		b.WriteString("\n")
 	}
+	b.WriteString(titleStyle.Render(title))
+	b.WriteString("\n\n")
 
 	// Service list with checkboxes
 	for i, svc := range m.proxyServices {
@@ -146,29 +144,23 @@ func (m ProxySelectionModel) View() string {
 			checkbox = checkboxStyle.Render("[✓]")
 		}
 
-		// Connection info
-		connStr := fmt.Sprintf(":%d -> %s:%d", svc.LocalPort, svc.TargetHost, svc.TargetPort)
+		// Default indicator
+		defaultIndicator := " "
+		if svc.SelectedByDefault {
+			defaultIndicator = "★"
+		}
 
-		line := fmt.Sprintf("%s%s %-25s %s", cursor, checkbox, svc.Name, connStr)
+		// Connection info - more compact
+		connStr := fmt.Sprintf(":%d → %s:%d", svc.LocalPort, svc.TargetHost, svc.TargetPort)
+
+		line := fmt.Sprintf("%s%s%s %-20s %s", cursor, checkbox, defaultIndicator, svc.Name, connStr)
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
-	// Show currently active services
+	// Help text - more compact
 	b.WriteString("\n")
-	activeNames := []string{}
-	for name := range m.activeServices {
-		activeNames = append(activeNames, name)
-	}
-	if len(activeNames) > 0 {
-		b.WriteString(helpStyle.Render(fmt.Sprintf("Currently active: %s", strings.Join(activeNames, ", "))))
-	} else {
-		b.WriteString(helpStyle.Render("No proxy services currently active"))
-	}
-
-	// Help text
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("space: toggle • enter: apply changes • esc/q: cancel"))
+	b.WriteString(helpStyle.Render("space:toggle • enter:apply • esc:cancel"))
 
 	return b.String()
 }
