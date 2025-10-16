@@ -32,6 +32,10 @@ var (
 			Foreground(lipgloss.Color("196")).
 			Bold(true)
 
+	statusRetryingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+
 	cursorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("205"))
 )
@@ -53,7 +57,7 @@ func NewManagementModel(config *Config) ManagementModel {
 	services := config.Services
 	portForwards := make([]*PortForward, len(services))
 	for i, svc := range services {
-		portForwards[i] = NewPortForward(svc, config.ClusterContext, config.Namespace)
+		portForwards[i] = NewPortForward(svc, config.ClusterContext, config.Namespace, config.MaxRetries)
 	}
 
 	return ManagementModel{
@@ -167,7 +171,8 @@ func (m ManagementModel) View() string {
 		}
 
 		status, errMsg := pf.GetStatus()
-		statusText := m.formatStatus(status)
+		retrying, retryAttempt, maxRetries := pf.GetRetryInfo()
+		statusText := m.formatStatus(status, retrying, retryAttempt, maxRetries)
 		
 		svc := pf.Service
 		
@@ -226,7 +231,17 @@ func (m ManagementModel) View() string {
 	return b.String()
 }
 
-func (m ManagementModel) formatStatus(status PortForwardStatus) string {
+func (m ManagementModel) formatStatus(status PortForwardStatus, retrying bool, retryAttempt int, maxRetries int) string {
+	if retrying {
+		retryText := fmt.Sprintf("[RETRYING %d", retryAttempt)
+		if maxRetries == -1 {
+			retryText += "]"
+		} else {
+			retryText += fmt.Sprintf("/%d]", maxRetries)
+		}
+		return statusRetryingStyle.Render(retryText)
+	}
+	
 	switch status {
 	case StatusRunning:
 		return statusRunningStyle.Render("[RUNNING]")

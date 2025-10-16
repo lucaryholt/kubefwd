@@ -25,6 +25,7 @@ type Config struct {
 	ClusterContext       string               `yaml:"cluster_context"`
 	ClusterName          string               `yaml:"cluster_name,omitempty"`
 	Namespace            string               `yaml:"namespace"`
+	MaxRetries           int                  `yaml:"max_retries,omitempty"` // Global default: -1 for infinite, 0 to disable, N for specific limit
 	AlternativeContexts  []AlternativeContext `yaml:"alternative_contexts,omitempty"`
 	Presets              []Preset             `yaml:"presets,omitempty"`
 	Services             []Service            `yaml:"services"`
@@ -39,6 +40,7 @@ type Service struct {
 	SelectedByDefault bool   `yaml:"selected_by_default"`
 	Context           string `yaml:"context,omitempty"`           // Optional: override cluster context
 	Namespace         string `yaml:"namespace,omitempty"`         // Optional: override namespace
+	MaxRetries        *int   `yaml:"max_retries,omitempty"`       // Optional: override global max_retries
 }
 
 // GetContext returns the service-specific context or falls back to global context
@@ -57,6 +59,14 @@ func (s *Service) GetNamespace(globalNamespace string) string {
 	return globalNamespace
 }
 
+// GetMaxRetries returns the service-specific max retries or falls back to global max retries
+func (s *Service) GetMaxRetries(globalMaxRetries int) int {
+	if s.MaxRetries != nil {
+		return *s.MaxRetries
+	}
+	return globalMaxRetries
+}
+
 // LoadConfig reads and parses the YAML configuration file
 func LoadConfig(filepath string) (*Config, error) {
 	data, err := os.ReadFile(filepath)
@@ -67,6 +77,11 @@ func LoadConfig(filepath string) (*Config, error) {
 	var config Config
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Set default max_retries if not specified
+	if config.MaxRetries == 0 {
+		config.MaxRetries = -1 // Default to infinite retries
 	}
 
 	// Validate configuration

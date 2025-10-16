@@ -13,6 +13,11 @@ cluster_name: Production
 # The namespace where the services are located
 namespace: default
 
+# Optional: Maximum retry attempts for port forwards when they fail
+# -1 = infinite retries (default), 0 = no retries, N = retry N times
+# Uses exponential backoff: 1s, 2s, 4s, 8s, ... up to 60s max
+max_retries: -1
+
 # Optional: Alternative cluster contexts for quick switching
 # Press 'c' in the management view to switch between contexts
 alternative_contexts:
@@ -81,4 +86,12 @@ services:
     selected_by_default: false
     context: gke_my-project_us-central1_staging-cluster  # Override cluster context
     namespace: staging                                    # Override namespace
+  
+  # Example with custom retry configuration
+  - name: Flaky Service
+    service_name: unstable-api
+    remote_port: 8080
+    local_port: 8081
+    selected_by_default: false
+    max_retries: 5  # Override global retry setting for this service
 

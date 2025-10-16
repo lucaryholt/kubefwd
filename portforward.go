@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // PortForwardStatus represents the current state of a port forward
@@ -30,19 +32,28 @@ type PortForward struct {
 	mu            sync.Mutex
 	context       string
 	namespace     string
+	retryCount    int  // Current retry attempt number
+	maxRetries    int  // Maximum retry attempts (-1 for infinite, 0 to disable)
+	manualStop    bool // Flag to prevent retries when user stops manually
+	retrying      bool // Indicates if currently in retry mode
 }
 
 // NewPortForward creates a new PortForward instance
-func NewPortForward(service Service, globalContext, globalNamespace string) *PortForward {
+func NewPortForward(service Service, globalContext, globalNamespace string, globalMaxRetries int) *PortForward {
 	// Use service-specific context/namespace or fall back to global
 	context := service.GetContext(globalContext)
 	namespace := service.GetNamespace(globalNamespace)
+	maxRetries := service.GetMaxRetries(globalMaxRetries)
 	
 	return &PortForward{
-		Service:   service,
-		Status:    StatusStopped,
-		context:   context,
-		namespace: namespace,
+		Service:    service,
+		Status:     StatusStopped,
+		context:    context,
+		namespace:  namespace,
+		maxRetries: maxRetries,
+		retryCount: 0,
+		manualStop: false,
+		retrying:   false,
 	}
 }
 
@@ -57,6 +68,8 @@ func (pf *PortForward) Start() error {
 
 	pf.Status = StatusStarting
 	pf.ErrorMessage = ""
+	pf.manualStop = false
+	pf.retrying = false
 
 	// Create context for the command
 	ctx, cancel := context.WithCancel(context.Background())
@@ -103,6 +116,7 @@ func (pf *PortForward) Start() error {
 	go pf.monitor(&stderr)
 
 	pf.Status = StatusRunning
+	pf.retryCount = 0 // Reset retry count on successful start
 	return nil
 }
 
@@ -111,17 +125,60 @@ func (pf *PortForward) monitor(stderr *strings.Builder) {
 	err := pf.cmd.Wait()
 
 	pf.mu.Lock()
-	defer pf.mu.Unlock()
-
+	
 	if err != nil && pf.Status != StatusStopped {
-		pf.Status = StatusError
-		pf.ErrorMessage = fmt.Sprintf("Process exited: %v", err)
-		if stderr.Len() > 0 {
-			pf.ErrorMessage += fmt.Sprintf(" | stderr: %s", strings.TrimSpace(stderr.String()))
+		// Check if we should retry
+		shouldRetry := !pf.manualStop && (pf.maxRetries == -1 || pf.retryCount < pf.maxRetries)
+		
+		if shouldRetry {
+			// Calculate exponential backoff delay: min(2^retryCount seconds, 60 seconds)
+			backoffSeconds := math.Min(math.Pow(2, float64(pf.retryCount)), 60)
+			pf.retryCount++
+			pf.retrying = true
+			pf.Status = StatusError // Temporarily set to error while waiting
+			pf.ErrorMessage = fmt.Sprintf("Connection lost, retrying in %.0fs (attempt %d", backoffSeconds, pf.retryCount)
+			if pf.maxRetries == -1 {
+				pf.ErrorMessage += ")..."
+			} else {
+				pf.ErrorMessage += fmt.Sprintf("/%d)...", pf.maxRetries)
+			}
+			
+			if debugMode {
+				fmt.Fprintf(os.Stderr, "[DEBUG] %s: Retrying after %.0fs (attempt %d)\n", 
+					pf.Service.Name, backoffSeconds, pf.retryCount)
+			}
+			
+			pf.mu.Unlock()
+			
+			// Wait for backoff period
+			time.Sleep(time.Duration(backoffSeconds) * time.Second)
+			
+			// Attempt to restart
+			if err := pf.Start(); err != nil {
+				pf.mu.Lock()
+				pf.Status = StatusError
+				pf.ErrorMessage = fmt.Sprintf("Retry failed: %v", err)
+				pf.mu.Unlock()
+			}
+		} else {
+			// Max retries exceeded or manual stop
+			pf.Status = StatusError
+			pf.retrying = false
+			pf.ErrorMessage = fmt.Sprintf("Process exited: %v", err)
+			if stderr.Len() > 0 {
+				pf.ErrorMessage += fmt.Sprintf(" | stderr: %s", strings.TrimSpace(stderr.String()))
+			}
+			if pf.retryCount > 0 {
+				pf.ErrorMessage += fmt.Sprintf(" | Failed after %d retries", pf.retryCount)
+			}
+			pf.ErrorMessage += fmt.Sprintf(" | Command: %s", pf.CommandString)
+			pf.mu.Unlock()
 		}
-		pf.ErrorMessage += fmt.Sprintf(" | Command: %s", pf.CommandString)
-	} else if pf.Status == StatusRunning {
-		pf.Status = StatusStopped
+	} else {
+		if pf.Status == StatusRunning {
+			pf.Status = StatusStopped
+		}
+		pf.mu.Unlock()
 	}
 }
 
@@ -141,6 +198,8 @@ func (pf *PortForward) Stop() error {
 
 	pf.Status = StatusStopped
 	pf.ErrorMessage = ""
+	pf.manualStop = true  // Prevent auto-retry
+	pf.retrying = false
 	return nil
 }
 
@@ -156,6 +215,13 @@ func (pf *PortForward) GetStatus() (PortForwardStatus, string) {
 	pf.mu.Lock()
 	defer pf.mu.Unlock()
 	return pf.Status, pf.ErrorMessage
+}
+
+// GetRetryInfo returns retry information for UI display
+func (pf *PortForward) GetRetryInfo() (retrying bool, attempt int, max int) {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	return pf.retrying, pf.retryCount, pf.maxRetries
 }
 
 // CheckKubectlAvailable verifies that kubectl is installed and available

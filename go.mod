@@ -1,4 +1,4 @@
-module service-helper-3000
+module kubefwd
 
 go 1.24.4
 
