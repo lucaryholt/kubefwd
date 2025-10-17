@@ -295,12 +295,6 @@ gcloud sql instances describe INSTANCE_NAME --format="value(ipAddresses[0].ipAdd
 gcloud redis instances describe INSTANCE_NAME --region=REGION --format="value(host)"
 ```
 
-**MemoryStore (Memcached):**
-```bash
-# Get the Memcached instance IP
-gcloud memcache instances describe INSTANCE_NAME --region=REGION --format="value(memcacheNodes[0].host)"
-```
-
 ### Split-View Interface
 
 The main management view displays proxy services in a separate pane with a responsive layout:
