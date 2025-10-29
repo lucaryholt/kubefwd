@@ -55,7 +55,7 @@ func main() {
 	}
 
 	// Initialize the app model
-	model := NewAppModel(config)
+	model := NewAppModel(config, *configFile)
 
 	// Start the Bubble Tea program
 	p := tea.NewProgram(model, tea.WithAltScreen())

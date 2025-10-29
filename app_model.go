@@ -17,27 +17,31 @@ const (
 	ScreenConfirmation
 	ScreenPresetSelection
 	ScreenProxySelection
+	ScreenConfig
 )
 
 // AppModel is the root model that manages screen transitions
 type AppModel struct {
 	screen              ScreenType
 	config              *Config
+	configPath          string
 	managementModel     ManagementModel
 	contextModel        ContextSelectionModel
 	confirmModel        ConfirmationModel
 	presetModel         PresetSelectionModel
 	proxySelectionModel ProxySelectionModel
+	configModel         ConfigModel
 	targetContextOption ContextOption
 	width               int
 	height              int
 }
 
 // NewAppModel creates a new app model
-func NewAppModel(config *Config) AppModel {
+func NewAppModel(config *Config, configPath string) AppModel {
 	return AppModel{
 		screen:          ScreenManagement,
 		config:          config,
+		configPath:      configPath,
 		managementModel: NewManagementModel(config),
 	}
 }
@@ -66,6 +70,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePresetSelection(msg)
 	case ScreenProxySelection:
 		return m.updateProxySelection(msg)
+	case ScreenConfig:
+		return m.updateConfig(msg)
 	}
 	return m, nil
 }
@@ -94,6 +100,11 @@ func (m AppModel) updateManagement(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.proxySelectionModel = NewProxySelectionModel(m.config.ProxyServices, m.managementModel.proxyPodManager)
 				return m, m.proxySelectionModel.Init()
 			}
+		} else if keyMsg.String() == "g" {
+			// Open config management screen
+			m.screen = ScreenConfig
+			m.configModel = NewConfigModel(m.configPath)
+			return m, m.configModel.Init()
 		}
 	}
 
@@ -243,6 +254,105 @@ func (m AppModel) applyProxySelection() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m AppModel) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle config reload message
+	if _, ok := msg.(configReloadMsg); ok {
+		return m.reloadConfig()
+	}
+
+	// Handle editor messages
+	if _, ok := msg.(editorClosedMsg); ok {
+		m.configModel.message = "Editor closed. Press 'r' to reload configuration."
+	}
+	if errMsg, ok := msg.(editorErrorMsg); ok {
+		m.configModel.message = fmt.Sprintf("Error: %v", errMsg.err)
+	}
+
+	updatedModel, cmd := m.configModel.Update(msg)
+	m.configModel = updatedModel.(ConfigModel)
+
+	if m.configModel.cancelled {
+		// Return to management
+		m.screen = ScreenManagement
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+func (m AppModel) reloadConfig() (tea.Model, tea.Cmd) {
+	// Track which services are currently running
+	runningServices := make(map[string]bool)
+	for i, pf := range m.managementModel.portForwards {
+		if pf.IsRunning() {
+			runningServices[m.managementModel.services[i].Name] = true
+		}
+	}
+
+	// Track which proxy services are currently running
+	runningProxyServices := make(map[string]bool)
+	for name, pxf := range m.managementModel.proxyForwards {
+		status, _ := pxf.GetStatus()
+		if status == StatusRunning {
+			runningProxyServices[name] = true
+		}
+	}
+
+	// Load new configuration
+	newConfig, err := LoadConfig(m.configPath)
+	if err != nil {
+		m.configModel.message = fmt.Sprintf("Error loading config: %v", err)
+		return m, nil
+	}
+
+	// Stop all running port forwards
+	for _, pf := range m.managementModel.portForwards {
+		if pf.IsRunning() {
+			pf.Stop()
+		}
+	}
+
+	// Stop all proxy forwards
+	for _, pxf := range m.managementModel.proxyForwards {
+		pxf.Stop()
+	}
+
+	// Delete the proxy pod if it exists
+	if m.managementModel.proxyPodManager != nil {
+		m.managementModel.proxyPodManager.DeletePod()
+	}
+
+	// Update config and recreate management model
+	m.config = newConfig
+	m.managementModel = NewManagementModel(newConfig)
+
+	// Restart services that were running and still exist
+	for i, svc := range m.managementModel.services {
+		if runningServices[svc.Name] {
+			m.managementModel.portForwards[i].Start()
+		}
+	}
+
+	// Restart proxy services that were running and still exist
+	if len(runningProxyServices) > 0 && len(m.config.ProxyServices) > 0 {
+		var servicesToRestart []ProxyService
+		for _, pxSvc := range m.config.ProxyServices {
+			if runningProxyServices[pxSvc.Name] {
+				servicesToRestart = append(servicesToRestart, pxSvc)
+			}
+		}
+		if len(servicesToRestart) > 0 {
+			if err := m.managementModel.ApplyProxySelection(servicesToRestart); err != nil {
+				m.configModel.message = fmt.Sprintf("Config reloaded, but proxy services failed: %v", err)
+				return m, nil
+			}
+		}
+	}
+
+	m.configModel.message = "Configuration reloaded successfully!"
+	return m, nil
+}
+
 func (m AppModel) View() string {
 	switch m.screen {
 	case ScreenManagement:
@@ -256,6 +366,8 @@ func (m AppModel) View() string {
 	case ScreenProxySelection:
 		// Render proxy selection as modal overlay
 		return m.renderProxySelectionModal()
+	case ScreenConfig:
+		return m.configModel.View()
 	}
 	return ""
 }

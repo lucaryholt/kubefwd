@@ -197,6 +197,7 @@ nano ~/.kubefwd.yaml
 - `p`: Apply a preset (if presets are configured)
 - `c`: Change cluster context (if alternative contexts are configured)
 - `r`: Manage proxy services (if proxy services are configured)
+- `g`: Open config management screen
 - `q`: Stop all services and quit
 
 **Status Indicators:**
@@ -243,6 +244,35 @@ Presets allow you to define and quickly apply specific sets of services. This is
    - Stop all currently running port forwards
    - Start only the services defined in the preset
 4. Return to the management view with your preset active
+
+### Config Management
+
+The config management screen allows you to view and manage your configuration file without leaving the application.
+
+**Accessing Config Management:**
+- Press `g` in the management view to open the config management screen
+
+**Features:**
+- **View Config Path**: See the full path to your current configuration file
+- **Edit Config**: Press `e` to open the config file in your preferred editor
+  - Uses the `$EDITOR` environment variable if set
+  - Falls back to `nano` or `vi` if `$EDITOR` is not set
+  - The application suspends while you edit and resumes when you close the editor
+- **Reload Config**: Press `r` to reload the configuration from the file
+  - The tool will preserve running port forwards for services that still exist in the new config
+  - Services that were running and still exist will be automatically restarted
+  - Services that no longer exist will be stopped
+  - New services from the config will be available but not automatically started
+
+**Typical Workflow:**
+1. Press `g` to open config management
+2. Press `e` to edit your config file
+3. Make your changes and save
+4. Close the editor (the app will resume)
+5. Press `r` to reload the configuration
+6. Press `Esc` or `q` to return to the management view
+
+This feature is especially useful when you need to quickly add new services, change ports, or update service configurations without restarting the entire application.
 
 ## Proxy Pod for GCP Resources
 
