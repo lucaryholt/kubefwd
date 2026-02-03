@@ -33,11 +33,11 @@ A TUI tool for managing Kubernetes port forwards to GKE services and proxy conne
    ```
 3. Build the binary:
    ```bash
-   go build -o service-helper
+   go build -o kubefwd
    ```
 4. (Optional) Move to your PATH:
    ```bash
-   sudo mv service-helper /usr/local/bin/
+   sudo mv kubefwd /usr/local/bin/
    ```
 
 ### Prebuilt
@@ -156,22 +156,35 @@ proxy_services:
 
 Run the tool with the default config file (`~/.kubefwd.yaml`):
 ```bash
-./service-helper
+./kubefwd
 ```
 
 Or specify a custom config file:
 ```bash
-./service-helper --config /path/to/config.yaml
+./kubefwd --config /path/to/config.yaml
 ```
 
 Enable debug mode to see kubectl commands:
 ```bash
-./service-helper --debug
+./kubefwd --debug
+```
+
+Auto-start default services on launch:
+```bash
+./kubefwd --default
+```
+
+Run in background mode (headless, no TUI):
+```bash
+./kubefwd --default --background &
 ```
 
 **Command-line flags:**
 - `--config <path>`: Path to configuration file (default: `~/.kubefwd.yaml`)
 - `--debug`: Enable debug output showing kubectl commands
+- `--default`: Auto-start services marked with `selected_by_default: true`
+- `--default-proxy`: Auto-start proxy services marked with `selected_by_default: true`
+- `--background`: Run in background mode without TUI (requires `--default` or `--default-proxy`)
 - `--help`: Show help message
 
 **First-time setup:**
@@ -182,6 +195,23 @@ cp config.example.yaml ~/.kubefwd.yaml
 # Edit it with your cluster details
 nano ~/.kubefwd.yaml
 ```
+
+**Quick Start with Defaults:**
+
+The `--default` and `--default-proxy` flags work in both TUI and background modes:
+
+```bash
+# Launch TUI with default services auto-started
+./kubefwd --default
+
+# Launch TUI with default proxy services auto-started
+./kubefwd --default-proxy
+
+# Launch TUI with both types auto-started
+./kubefwd --default --default-proxy
+```
+
+This is useful when you want to quickly start your common services without manually pressing `d` in the TUI.
 
 ### Controls
 
@@ -217,6 +247,68 @@ nano ~/.kubefwd.yaml
 - Error messages are displayed below failed services with full kubectl command for debugging
 - Proxy pod status shows creation state and number of active connections
 - UI automatically adapts to your terminal width for optimal display
+
+### Background Mode
+
+Background mode allows you to run kubefwd as a headless service without the TUI, perfect for automated environments or running services persistently.
+
+**Requirements:**
+- The `--background` flag requires at least one of `--default` or `--default-proxy`
+- Services must be marked with `selected_by_default: true` in the config
+
+**Starting in Background:**
+```bash
+# Start default services in background (use & to free up terminal)
+./kubefwd --default --background &
+
+# Start default proxy services in background
+./kubefwd --default-proxy --background &
+
+# Start both in background
+./kubefwd --default --default-proxy --background &
+
+# Or use nohup to keep it running after logout
+nohup ./kubefwd --default --background > /dev/null 2>&1 &
+```
+
+**How it Works:**
+1. The tool validates flags and starts selected services
+2. Waits for all services to reach running or error state (60 second timeout)
+3. Creates a PID file at `~/.kubefwd.pid`
+4. Prints status messages to stderr
+5. Runs indefinitely until stopped
+
+**Note:** Use `&` at the end of the command to run it as a background process and free up your terminal:
+```bash
+./kubefwd --default --background &
+```
+The process will run in the background and you can continue using your terminal.
+
+**Stopping Background Services:**
+```bash
+# Using the PID file (recommended)
+kill $(cat ~/.kubefwd.pid)
+
+# Or manually find and kill the process
+ps aux | grep kubefwd
+kill <PID>
+```
+
+**Checking Status:**
+```bash
+# Check if the process is running
+ps -p $(cat ~/.kubefwd.pid)
+
+# View the PID
+cat ~/.kubefwd.pid
+```
+
+**Important Notes:**
+- The tool prevents multiple instances by checking for existing PID files
+- Services are gracefully stopped on SIGTERM or SIGINT
+- Proxy pods are automatically cleaned up on exit
+- If some services fail to start, the tool still runs (warnings printed to stderr)
+- PID file is automatically removed on clean shutdown
 
 ### Context Switching
 
@@ -531,6 +623,10 @@ Some screens (like proxy service selection) appear as centered modal overlays:
 8. **Unified Management**: Both direct services and proxy services work identically in the UI - start/stop them the same way
 9. **Override Visibility**: Use `o` to toggle override details - keep them hidden for a cleaner view, show them when you need context
 10. **Wide Terminals**: The UI takes advantage of wide terminals - expand your window for the best experience
+11. **Quick Start**: Use `--default` and `--default-proxy` flags to auto-start common services on launch (works in both TUI and background modes)
+12. **Background Mode**: Run as a daemon with `--background &` for CI/CD, Docker containers, or long-running development environments
+13. **Multiple Environments**: Use different config files (`--config`) with background mode to run separate instances for different environments
+14. **Shell Background**: Remember to use `&` at the end of background mode commands to free up your terminal
 
 ## Troubleshooting
 
@@ -575,6 +671,35 @@ If proxy services show errors:
 - Check VPC peering between GKE and GCP resource
 - Verify firewall rules allow traffic from GKE cluster to the GCP resource
 - Test connectivity from within the cluster: `kubectl run -it --rm debug --image=alpine --restart=Never -- sh` then `nc -zv <target_host> <target_port>`
+
+### Background mode issues
+
+**Error: "--background requires at least one of --default or --default-proxy"**
+- You must specify `--default` or `--default-proxy` (or both) when using `--background`
+- This ensures services are actually started when running headless
+
+**Error: "kubefwd is already running"**
+- Another instance is already running in background mode
+- Stop it first: `kill $(cat ~/.kubefwd.pid)`
+- If the PID file is stale, remove it: `rm ~/.kubefwd.pid`
+
+**Services not starting in background mode**
+- Check stderr output for error messages
+- Ensure services are marked with `selected_by_default: true` in your config
+- Verify kubectl context and namespace are correct
+- Run with `--debug` flag for detailed output: `./kubefwd --default --background --debug 2>&1 | tee kubefwd.log &`
+- If running without `&`, the terminal will be blocked (this is expected - use `&` to free it up)
+
+**Timeout waiting for services to start**
+- Some services may be slow to initialize (60 second timeout)
+- Check if pods exist: `kubectl get pods -n <namespace>`
+- Check for port conflicts: `lsof -i :<port>`
+- Verify service configuration is correct
+
+**Can't stop background process**
+- If PID file is missing: `ps aux | grep kubefwd | grep -v grep` then `kill <PID>`
+- Force stop if needed: `kill -9 <PID>`
+- Clean up manually: `rm ~/.kubefwd.pid`
 
 ## Development
 

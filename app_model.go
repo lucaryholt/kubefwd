@@ -37,12 +37,38 @@ type AppModel struct {
 }
 
 // NewAppModel creates a new app model
-func NewAppModel(config *Config, configPath string) AppModel {
+func NewAppModel(config *Config, configPath string, autoStartDefault, autoStartDefaultProxy bool) AppModel {
+	managementModel := NewManagementModel(config)
+
+	// Auto-start services if flags are set
+	if autoStartDefault {
+		for i, svc := range managementModel.services {
+			if svc.SelectedByDefault {
+				managementModel.portForwards[i].Start()
+			}
+		}
+	}
+
+	if autoStartDefaultProxy && len(config.ProxyServices) > 0 {
+		// Collect default proxy services
+		var defaultProxyServices []ProxyService
+		for _, pxSvc := range config.ProxyServices {
+			if pxSvc.SelectedByDefault {
+				defaultProxyServices = append(defaultProxyServices, pxSvc)
+			}
+		}
+
+		// Apply proxy selection if there are default services
+		if len(defaultProxyServices) > 0 {
+			managementModel.ApplyProxySelection(defaultProxyServices)
+		}
+	}
+
 	return AppModel{
 		screen:          ScreenManagement,
 		config:          config,
 		configPath:      configPath,
-		managementModel: NewManagementModel(config),
+		managementModel: managementModel,
 	}
 }
 
