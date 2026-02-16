@@ -364,7 +364,7 @@ func (m ManagementModel) renderLeftPane(width int) string {
 	if len(m.proxyServices) > 0 {
 		helpRow2 += "r:proxy • "
 	}
-	helpRow2 += "g:config • q:quit"
+	helpRow2 += "l:ports • g:config • q:quit"
 	b.WriteString(helpStyle.Render(helpRow2))
 
 	// Render in a styled box with dynamic width

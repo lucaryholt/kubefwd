@@ -18,6 +18,7 @@ const (
 	ScreenPresetSelection
 	ScreenProxySelection
 	ScreenConfig
+	ScreenPortChecker
 )
 
 // AppModel is the root model that manages screen transitions
@@ -31,6 +32,7 @@ type AppModel struct {
 	presetModel         PresetSelectionModel
 	proxySelectionModel ProxySelectionModel
 	configModel         ConfigModel
+	portCheckerModel    PortCheckerModel
 	targetContextOption ContextOption
 	width               int
 	height              int
@@ -98,6 +100,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateProxySelection(msg)
 	case ScreenConfig:
 		return m.updateConfig(msg)
+	case ScreenPortChecker:
+		return m.updatePortChecker(msg)
 	}
 	return m, nil
 }
@@ -131,6 +135,11 @@ func (m AppModel) updateManagement(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = ScreenConfig
 			m.configModel = NewConfigModel(m.configPath)
 			return m, m.configModel.Init()
+		} else if keyMsg.String() == "l" {
+			// Open port checker screen
+			m.screen = ScreenPortChecker
+			m.portCheckerModel = NewPortCheckerModel(m.config, m.managementModel.portForwards, m.managementModel.proxyForwards)
+			return m, m.portCheckerModel.Init()
 		}
 	}
 
@@ -280,6 +289,19 @@ func (m AppModel) applyProxySelection() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m AppModel) updatePortChecker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updatedModel, cmd := m.portCheckerModel.Update(msg)
+	m.portCheckerModel = updatedModel.(PortCheckerModel)
+
+	if m.portCheckerModel.cancelled {
+		// Return to management
+		m.screen = ScreenManagement
+		return m, nil
+	}
+
+	return m, cmd
+}
+
 func (m AppModel) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle config reload message
 	if _, ok := msg.(configReloadMsg); ok {
@@ -394,6 +416,8 @@ func (m AppModel) View() string {
 		return m.renderProxySelectionModal()
 	case ScreenConfig:
 		return m.configModel.View()
+	case ScreenPortChecker:
+		return m.portCheckerModel.View()
 	}
 	return ""
 }

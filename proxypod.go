@@ -561,3 +561,13 @@ func (pf *ProxyForward) GetSqlTapManager() *SqlTapManager {
 	return pf.sqlTapManager
 }
 
+// GetPID returns the process ID of the kubectl port-forward process
+func (pf *ProxyForward) GetPID() int {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	if pf.cmd != nil && pf.cmd.Process != nil {
+		return pf.cmd.Process.Pid
+	}
+	return 0
+}
+

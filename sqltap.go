@@ -198,6 +198,16 @@ func (stm *SqlTapManager) GetGrpcPort() int {
 	return stm.grpcPort
 }
 
+// GetPID returns the process ID of the sql-tapd process
+func (stm *SqlTapManager) GetPID() int {
+	stm.mu.Lock()
+	defer stm.mu.Unlock()
+	if stm.cmd != nil && stm.cmd.Process != nil {
+		return stm.cmd.Process.Pid
+	}
+	return 0
+}
+
 // CheckSqlTapdAvailable verifies that sql-tapd is installed and available
 func CheckSqlTapdAvailable() error {
 	cmd := exec.Command("sql-tapd", "--version")

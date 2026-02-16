@@ -12,6 +12,7 @@ A TUI tool for managing Kubernetes port forwards to GKE services and proxy conne
 - 🔄 Switch between cluster contexts on-the-fly with safety confirmation
 - 🌐 Per-service context and namespace overrides
 - 🔁 Automatic retry with exponential backoff when connections fail
+- 🔍 Port status checker to identify and kill processes using configured ports
 - ⚙️ YAML-based configuration
 - 📊 Automatic status monitoring
 - 🔍 Debug mode to troubleshoot kubectl commands
@@ -233,6 +234,7 @@ This is useful when you want to quickly start your common services without manua
 - `p`: Apply a preset (if presets are configured)
 - `c`: Change cluster context (if alternative contexts are configured)
 - `r`: Manage proxy services (if proxy services are configured)
+- `l`: Open port status checker to view and manage port usage
 - `g`: Open config management screen
 - `q`: Stop all services and quit
 
@@ -315,6 +317,51 @@ cat ~/.kubefwd.pid
 - Proxy pods are automatically cleaned up on exit
 - If some services fail to start, the tool still runs (warnings printed to stderr)
 - PID file is automatically removed on clean shutdown
+
+### Port Status Checker
+
+The port status checker allows you to view all configured ports and identify which processes are using them. This is especially useful for debugging port conflicts or cleaning up stale processes.
+
+**Accessing the Port Checker:**
+- Press `l` from the main management view
+
+**Features:**
+- View all ports defined in your configuration (both Direct and Proxy services)
+- See the current status of each port:
+  - `✓ FREE` (gray): Port is not in use
+  - `● KUBEFWD` (green): Port is in use by a kubefwd-managed process
+  - `⚠ EXTERNAL` (yellow): Port is in use by an external process (not managed by kubefwd)
+- Display PID and process information for ports in use
+- Kill processes using the configured ports with confirmation
+
+**Port Checker Controls:**
+- `↑`/`↓` or `k`/`j`: Navigate through ports
+- `K` (capital K): Kill the process using the selected port
+- `r`: Manually refresh port status
+- `Esc` or `q`: Return to main management view
+
+**Kill Process Flow:**
+1. Navigate to a port that's in use
+2. Press `K` (capital K) to initiate kill
+3. A confirmation dialog will appear showing:
+   - The PID to be killed
+   - The service name
+   - Whether it's a kubefwd or external process
+4. Press `y` to confirm or `n`/`Esc` to cancel
+5. After killing, the port list automatically refreshes
+
+**Status Detection:**
+- The checker uses `lsof` to identify processes using each configured port
+- It cross-references PIDs with kubefwd's internal tracking to distinguish between:
+  - Kubefwd-managed kubectl port-forward processes
+  - External processes (e.g., other applications using the same port)
+- Port status auto-refreshes every 2 seconds
+
+**Use Cases:**
+- Identify port conflicts before starting services
+- Clean up stale port-forward processes that didn't shut down cleanly
+- Kill external processes occupying ports you need for kubefwd
+- Verify which ports are actually in use vs. configured
 
 ### Context Switching
 
