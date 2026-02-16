@@ -229,9 +229,10 @@ func (bm *BackgroundManager) StopAll() {
 		}
 	}
 
-	// Stop all proxy forwards
+	// Stop all proxy forwards and cleanup SQL-Tap
 	for _, pxf := range bm.proxyForwards {
-		pxf.Stop()
+		// Use Cleanup() to stop both port-forward and sql-tapd
+		pxf.Cleanup()
 	}
 
 	// Delete proxy pod

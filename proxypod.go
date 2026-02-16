@@ -362,16 +362,17 @@ func (pm *ProxyPodManager) GetStatus() (ProxyPodStatus, string, int) {
 
 // ProxyForward manages a port-forward to the proxy pod
 type ProxyForward struct {
-	ProxyService  ProxyService
-	PodManager    *ProxyPodManager
-	Status        PortForwardStatus
-	ErrorMessage  string
-	CommandString string
-	cmd           *exec.Cmd
-	cancel        context.CancelFunc
-	mu            sync.Mutex
-	context       string
-	namespace     string
+	ProxyService   ProxyService
+	PodManager     *ProxyPodManager
+	Status         PortForwardStatus
+	ErrorMessage   string
+	CommandString  string
+	cmd            *exec.Cmd
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	context        string
+	namespace      string
+	sqlTapManager  *SqlTapManager // nil if sql-tap not enabled
 }
 
 // NewProxyForward creates a new proxy forward instance
@@ -379,13 +380,27 @@ func NewProxyForward(proxyService ProxyService, podManager *ProxyPodManager, glo
 	context := proxyService.GetContext(globalContext)
 	namespace := proxyService.GetNamespace(globalNamespace)
 
-	return &ProxyForward{
+	pf := &ProxyForward{
 		ProxyService: proxyService,
 		PodManager:   podManager,
 		Status:       StatusStopped,
 		context:      context,
 		namespace:    namespace,
 	}
+	
+	// Create SQL-Tap manager if enabled
+	if proxyService.IsSqlTapEnabled() {
+		pf.sqlTapManager = NewSqlTapManager(
+			proxyService.Name,
+			proxyService.SqlTapDriver,
+			proxyService.LocalPort,
+			proxyService.GetSqlTapPort(),
+			proxyService.GetSqlTapGrpcPort(),
+			proxyService.SqlTapDsnEnv,
+		)
+	}
+	
+	return pf
 }
 
 // Start initiates the proxy forward
@@ -402,18 +417,35 @@ func (pf *ProxyForward) Start() error {
 	if !exists {
 		pf.Status = StatusError
 		pf.ErrorMessage = "Service not found in proxy pod"
-		return fmt.Errorf(pf.ErrorMessage)
+		return fmt.Errorf("service not found in proxy pod")
 	}
 
 	pf.Status = StatusStarting
 	pf.ErrorMessage = ""
+	
+	// If SQL-Tap is enabled, start it first
+	if pf.sqlTapManager != nil {
+		debugLog("Starting sql-tap for %s", pf.ProxyService.Name)
+		if err := pf.sqlTapManager.Start(); err != nil {
+			pf.Status = StatusError
+			pf.ErrorMessage = fmt.Sprintf("Failed to start sql-tap: %v", err)
+			return err
+		}
+	}
 
 	// Create context for the command
 	ctx, cancel := context.WithCancel(context.Background())
 	pf.cancel = cancel
 
+	// Determine the local port for kubectl port-forward
+	// If SQL-Tap is enabled, forward to the internal port; otherwise to the user-facing port
+	localPort := pf.ProxyService.LocalPort
+	if pf.sqlTapManager != nil {
+		localPort = pf.ProxyService.GetSqlTapPort()
+	}
+
 	// Build kubectl port-forward command to the proxy pod
-	portSpec := fmt.Sprintf("%d:%d", pf.ProxyService.LocalPort, podPort)
+	portSpec := fmt.Sprintf("%d:%d", localPort, podPort)
 	podSpec := fmt.Sprintf("pod/%s", pf.PodManager.podName)
 
 	args := []string{
@@ -440,6 +472,12 @@ func (pf *ProxyForward) Start() error {
 			pf.ErrorMessage += fmt.Sprintf(" | stderr: %s", stderr.String())
 		}
 		cancel()
+		
+		// If sql-tap was started, stop it since port-forward failed
+		if pf.sqlTapManager != nil && pf.sqlTapManager.IsRunning() {
+			pf.sqlTapManager.Stop()
+		}
+		
 		return err
 	}
 
@@ -471,6 +509,7 @@ func (pf *ProxyForward) monitor(stderr *strings.Builder) {
 }
 
 // Stop terminates the proxy forward
+// Note: SQL-Tap daemon is kept running (persistent mode) for query history inspection
 func (pf *ProxyForward) Stop() error {
 	pf.mu.Lock()
 	defer pf.mu.Unlock()
@@ -486,7 +525,35 @@ func (pf *ProxyForward) Stop() error {
 
 	pf.Status = StatusStopped
 	pf.ErrorMessage = ""
+	
+	// Note: We intentionally do NOT stop sql-tapd here (persistent mode)
+	// It will be stopped only on cleanup or service removal
+	
 	return nil
+}
+
+// Cleanup terminates both proxy forward and SQL-Tap daemon
+// This should be called on app exit or when service is removed from config
+func (pf *ProxyForward) Cleanup() error {
+	// Stop the port-forward first
+	pf.Stop()
+	
+	// Then stop SQL-Tap if it exists
+	if pf.sqlTapManager != nil {
+		return pf.sqlTapManager.Stop()
+	}
+	
+	return nil
+}
+
+// GetSqlTapManager returns the SQL-Tap manager if enabled
+func (pf *ProxyForward) GetSqlTapManager() *SqlTapManager {
+	return pf.sqlTapManager
+}
+
+// IsSqlTapEnabled returns true if SQL-Tap is enabled for this proxy
+func (pf *ProxyForward) IsSqlTapEnabled() bool {
+	return pf.sqlTapManager != nil
 }
 
 // IsRunning returns true if the proxy forward is currently running

@@ -150,3 +150,26 @@ proxy_services:
     namespace: dev-namespace                          # Override namespace
     max_retries: 3                                    # Override retry setting
 
+  # Example: CloudSQL with SQL-Tap for query inspection
+  - name: CloudSQL Production (SQL-Tap)
+    target_host: 10.1.2.3  # Private IP of CloudSQL instance
+    target_port: 5432
+    local_port: 5432
+    selected_by_default: false
+    # SQL-Tap configuration - enables real-time SQL query inspection
+    sql_tap_port: 5435              # Internal port for proxy connection (must differ from local_port)
+    sql_tap_grpc_port: 9091         # gRPC port for sql-tap TUI (optional, defaults to 9091)
+    sql_tap_driver: postgres        # Required: "postgres" or "mysql"
+    sql_tap_dsn_env: DATABASE_URL   # Optional: env var with DSN for EXPLAIN support (defaults to DATABASE_URL)
+    # Usage: Run 'sql-tap localhost:9091' in a separate terminal to inspect queries
+
+  # Example: MySQL with SQL-Tap
+  - name: MySQL Production (SQL-Tap)
+    target_host: 10.1.4.6
+    target_port: 3306
+    local_port: 3306
+    selected_by_default: false
+    sql_tap_port: 3307
+    sql_tap_grpc_port: 9092         # Different gRPC port to avoid conflicts
+    sql_tap_driver: mysql
+
