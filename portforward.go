@@ -36,6 +36,7 @@ type PortForward struct {
 	maxRetries    int  // Maximum retry attempts (-1 for infinite, 0 to disable)
 	manualStop    bool // Flag to prevent retries when user stops manually
 	retrying      bool // Indicates if currently in retry mode
+	sqlTapManager *SqlTapManager // Manages sql-tapd process if enabled
 }
 
 // NewPortForward creates a new PortForward instance
@@ -45,15 +46,35 @@ func NewPortForward(service Service, globalContext, globalNamespace string, glob
 	namespace := service.GetNamespace(globalNamespace)
 	maxRetries := service.GetMaxRetries(globalMaxRetries)
 	
+	// Initialize sql-tap manager if configured
+	var sqlTapManager *SqlTapManager
+	if service.SqlTapPort != nil {
+		grpcPort := 9091 // Default
+		if service.SqlTapGrpcPort != nil {
+			grpcPort = *service.SqlTapGrpcPort
+		}
+		sqlTapManager = NewSqlTapManager(
+			true,
+			service.SqlTapDriver,
+			service.SqlTapDatabaseUrl,
+			*service.SqlTapPort,
+			service.LocalPort,
+			grpcPort,
+		)
+	} else {
+		sqlTapManager = NewSqlTapManager(false, "", "", 0, 0, 0)
+	}
+	
 	return &PortForward{
-		Service:    service,
-		Status:     StatusStopped,
-		context:    context,
-		namespace:  namespace,
-		maxRetries: maxRetries,
-		retryCount: 0,
-		manualStop: false,
-		retrying:   false,
+		Service:       service,
+		Status:        StatusStopped,
+		context:       context,
+		namespace:     namespace,
+		maxRetries:    maxRetries,
+		retryCount:    0,
+		manualStop:    false,
+		retrying:      false,
+		sqlTapManager: sqlTapManager,
 	}
 }
 
@@ -117,6 +138,32 @@ func (pf *PortForward) Start() error {
 
 	pf.Status = StatusRunning
 	pf.retryCount = 0 // Reset retry count on successful start
+	
+	// Start sql-tap if enabled
+	if pf.sqlTapManager.IsEnabled() {
+		// Unlock before starting sql-tap to avoid deadlock
+		pf.mu.Unlock()
+		
+		// Wait briefly for port-forward to be ready
+		time.Sleep(2 * time.Second)
+		
+		// Start sql-tapd
+		if err := pf.sqlTapManager.Start(); err != nil {
+			// If sql-tap fails, stop the port-forward
+			pf.mu.Lock()
+			debugLog("Failed to start sql-tapd for %s: %v", pf.Service.Name, err)
+			pf.Status = StatusError
+			pf.ErrorMessage = fmt.Sprintf("sql-tap failed: %v", err)
+			if pf.cancel != nil {
+				pf.cancel()
+			}
+			return err
+		}
+		
+		// Re-lock for the deferred unlock
+		pf.mu.Lock()
+	}
+	
 	return nil
 }
 
@@ -191,6 +238,13 @@ func (pf *PortForward) Stop() error {
 		return nil // Already stopped
 	}
 
+	// Stop sql-tap first if enabled
+	if pf.sqlTapManager.IsEnabled() {
+		pf.mu.Unlock()
+		pf.sqlTapManager.Stop()
+		pf.mu.Lock()
+	}
+
 	if pf.cancel != nil {
 		pf.cancel()
 		pf.cancel = nil
@@ -222,6 +276,11 @@ func (pf *PortForward) GetRetryInfo() (retrying bool, attempt int, max int) {
 	pf.mu.Lock()
 	defer pf.mu.Unlock()
 	return pf.retrying, pf.retryCount, pf.maxRetries
+}
+
+// GetSqlTapManager returns the sql-tap manager for this port forward
+func (pf *PortForward) GetSqlTapManager() *SqlTapManager {
+	return pf.sqlTapManager
 }
 
 // CheckKubectlAvailable verifies that kubectl is installed and available

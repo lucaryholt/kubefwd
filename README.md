@@ -138,6 +138,10 @@ proxy_services:
   - **context** (optional): Override the global cluster context for this service
   - **namespace** (optional): Override the global namespace for this service
   - **max_retries** (optional): Override the global max_retries setting for this specific service
+  - **sql_tap_port** (optional): Port for sql-tap proxy (enables SQL traffic monitoring)
+  - **sql_tap_driver** (optional): Database driver for sql-tap (`postgres` or `mysql`)
+  - **sql_tap_database_url** (optional): Database connection string for sql-tapd
+  - **sql_tap_grpc_port** (optional): gRPC port for sql-tap TUI client (default: auto-assigned starting at 9091)
 - **proxy_pod_name** (optional): Name for the shared proxy pod (default: `kubefwd-proxy`)
 - **proxy_pod_image** (optional): Container image for proxy pod (default: `alpine/socat:latest`)
 - **proxy_pod_context** (optional): Context where the proxy pod should be created (default: uses `cluster_context`)
@@ -151,6 +155,10 @@ proxy_services:
   - **context** (optional): Override the global cluster context for this proxy
   - **namespace** (optional): Override the global namespace for this proxy
   - **max_retries** (optional): Override the global max_retries setting for this specific proxy
+  - **sql_tap_port** (optional): Port for sql-tap proxy (enables SQL traffic monitoring)
+  - **sql_tap_driver** (optional): Database driver for sql-tap (`postgres` or `mysql`)
+  - **sql_tap_database_url** (optional): Database connection string for sql-tapd
+  - **sql_tap_grpc_port** (optional): gRPC port for sql-tap TUI client (default: auto-assigned starting at 9091)
 
 ## Usage
 
@@ -369,6 +377,256 @@ This feature is especially useful when you need to quickly add new services, cha
 ## Proxy Pod for GCP Resources
 
 The proxy pod feature allows you to connect to GCP resources (CloudSQL, MemoryStore, etc.) that don't have direct Kubernetes services but are accessible from within the cluster.
+
+## SQL Traffic Monitoring with sql-tap
+
+kubefwd supports real-time SQL traffic monitoring through [sql-tap](https://github.com/mickamy/sql-tap), a transparent database proxy that captures and displays SQL queries as they flow between your application and database.
+
+### What is sql-tap?
+
+sql-tap is a tool that sits between your application and database, capturing every SQL query in real-time without modifying your application code. It works by:
+
+1. **sql-tapd**: A proxy daemon that forwards traffic while logging queries
+2. **sql-tap**: A TUI client that displays captured queries with syntax highlighting
+
+This is incredibly useful for:
+- Debugging database queries in development
+- Understanding what queries your application makes
+- Performance analysis and optimization
+- Learning how ORMs translate to SQL
+
+### Installation
+
+Install sql-tap before using this feature:
+
+**Homebrew (macOS/Linux):**
+```bash
+brew install mickamy/tap/sql-tap
+```
+
+**Go Install:**
+```bash
+go install github.com/mickamy/sql-tap/cmd/sql-tapd@latest
+go install github.com/mickamy/sql-tap/cmd/sql-tap@latest
+```
+
+**Docker:**
+```bash
+docker pull ghcr.io/mickamy/sql-tap:latest
+```
+
+### Configuration
+
+Add sql-tap fields to any service (direct or proxy) that connects to a database:
+
+```yaml
+services:
+  - name: Postgres Database
+    service_name: postgres
+    remote_port: 5432
+    local_port: 5432
+    selected_by_default: false
+    # sql-tap configuration
+    sql_tap_port: 5433                                                # Port where sql-tapd listens
+    sql_tap_driver: postgres                                          # Driver: postgres or mysql
+    sql_tap_database_url: "postgres://user:pass@localhost:5432/mydb?sslmode=disable"  # Connection string
+
+proxy_services:
+  - name: CloudSQL Production
+    target_host: 10.1.2.3
+    target_port: 5432
+    local_port: 5432
+    selected_by_default: false
+    # sql-tap configuration for proxy services
+    sql_tap_port: 5433
+    sql_tap_driver: postgres
+    sql_tap_database_url: "postgres://produser:prodpass@localhost:5432/proddb?sslmode=disable"
+```
+
+**Configuration fields:**
+- `sql_tap_port`: The port where sql-tapd listens (your application connects here)
+- `sql_tap_driver`: Database driver type (`postgres` or `mysql`)
+- `sql_tap_database_url`: Full database connection string used by sql-tapd
+- `sql_tap_grpc_port` (optional): gRPC port for TUI client (default: auto-assigned starting at 9091)
+
+**Important notes:**
+- `sql_tap_port` must be different from `local_port`
+- All three required fields must be present when sql-tap is enabled
+- The `sql_tap_database_url` should point to `localhost:<local_port>` (the actual port-forward)
+- `sql_tap_grpc_port` is optional and will be auto-assigned if not specified
+- Multiple services automatically get incremented gRPC ports (9091, 9092, 9093...)
+
+### How It Works
+
+When sql-tap is enabled, kubefwd automatically manages the complete setup:
+
+```
+Application                                    Port Forward              Database
+     |                                               |                       |
+     | Connect to localhost:5433                     |                       |
+     v                                               v                       |
+sql-tapd (proxy)  ------>  localhost:5432  ------>  kubectl  ------------>  DB
+(sql_tap_port)            (local_port)            port-forward         (remote DB)
+```
+
+**Flow:**
+1. kubefwd starts the normal port-forward (`localhost:5432` → database)
+2. kubefwd automatically starts `sql-tapd` (`localhost:5433` → `localhost:5432`)
+3. Your application connects to `localhost:5433` (the sql-tap port)
+4. sql-tapd forwards traffic to `localhost:5432` while logging queries
+5. Run `sql-tap` in another terminal to view queries in real-time
+
+### Usage Workflow
+
+**Step 1: Start the service with sql-tap**
+
+```bash
+./kubefwd
+# Navigate to your database service and press 's' to start it
+# kubefwd will automatically start both the port-forward and sql-tapd
+```
+
+The TUI will show sql-tap status:
+```
+▶ ★ Postgres Database     ● :5432 → postgres:5432 [SQL-TAP ●:5433]
+```
+
+**Step 2: Update your application**
+
+Configure your application to connect to the sql-tap port:
+
+```bash
+# Before (direct connection)
+DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+
+# After (via sql-tap)
+DATABASE_URL="postgres://user:pass@localhost:5433/mydb"
+```
+
+**Step 3: View queries in real-time**
+
+In a separate terminal, run the sql-tap TUI:
+
+```bash
+# Connect to the first service (default gRPC port 9091)
+sql-tap localhost:9091
+
+# If you have multiple services with sql-tap enabled:
+# Second service uses port 9092, third uses 9093, etc.
+sql-tap localhost:9092
+```
+
+To find which gRPC port a service is using:
+- Check the kubefwd UI (shows gRPC port in sql-tap status)
+- Look at debug logs: `tail -f /tmp/kubefwd-debug.log`
+- Custom ports are shown in your config file
+
+This opens an interactive interface showing:
+- All SQL queries in real-time
+- Query execution time
+- Transaction boundaries
+- Ability to run EXPLAIN on any query
+
+**Tip:** With multiple databases, open multiple terminals running `sql-tap` on different gRPC ports to monitor them simultaneously.
+
+### Status Indicators
+
+In the kubefwd UI, sql-tap shows status alongside the service:
+
+- `[SQL-TAP ●:5433 gRPC:9091]` - sql-tap running successfully (shows both proxy port and gRPC port)
+- `[SQL-TAP ◐:5433 gRPC:9091]` - sql-tap starting
+- `[SQL-TAP ✗:5433 gRPC:9091]` - sql-tap encountered an error
+
+For proxy services in the right pane:
+- `[ST ●:5433/9091]` - Compact format showing sql-tap proxy port and gRPC port
+
+### Troubleshooting
+
+**sql-tapd not starting:**
+- Ensure sql-tapd is installed and in your PATH
+- Check that `sql_tap_port` doesn't conflict with other services
+- Verify the `sql_tap_database_url` format is correct for your driver
+- Use `--debug` flag to see the full sql-tapd command
+
+**Can't connect to sql-tap port:**
+- Ensure the port-forward is running first (sql-tap depends on it)
+- Check that your application is connecting to the correct port
+- Verify no firewall is blocking the sql-tap port
+
+**Queries not appearing in sql-tap:**
+- Ensure your application is connecting to `sql_tap_port`, not `local_port`
+- Check the sql-tap TUI is connected to the correct gRPC port
+- Verify sql-tapd is running (check status in kubefwd UI)
+- Try connecting to the correct gRPC port: `sql-tap localhost:9091` (or 9092, 9093, etc.)
+
+**Can't connect sql-tap TUI client:**
+- Check which gRPC port the service is using (shown in kubefwd UI)
+- Verify the port in debug logs: `tail -f /tmp/kubefwd-debug.log`
+- For the first service, it's usually 9091, second is 9092, and so on
+- Custom gRPC ports are specified in `sql_tap_grpc_port` config field
+- Ensure no other process is using the gRPC port
+
+**Authentication errors:**
+- The `sql_tap_database_url` must match your actual database credentials
+- Ensure the connection string format is correct for your driver
+
+### Examples
+
+**PostgreSQL direct service:**
+```yaml
+services:
+  - name: Dev Database
+    service_name: postgres-service
+    remote_port: 5432
+    local_port: 5432
+    sql_tap_port: 5433
+    sql_tap_driver: postgres
+    sql_tap_database_url: "postgres://devuser:devpass@localhost:5432/devdb?sslmode=disable"
+```
+
+**MySQL CloudSQL via proxy:**
+```yaml
+proxy_services:
+  - name: Production MySQL
+    target_host: 10.1.2.3
+    target_port: 3306
+    local_port: 3306
+    sql_tap_port: 3307
+    sql_tap_driver: mysql
+    sql_tap_database_url: "root:password@tcp(localhost:3306)/proddb"
+```
+
+**Multiple databases with different sql-tap ports:**
+```yaml
+services:
+  - name: Users DB
+    service_name: users-postgres
+    remote_port: 5432
+    local_port: 5432
+    sql_tap_port: 5433  # First database
+    sql_tap_driver: postgres
+    sql_tap_database_url: "postgres://user:pass@localhost:5432/users"
+
+  - name: Orders DB
+    service_name: orders-postgres
+    remote_port: 5432
+    local_port: 5532
+    sql_tap_port: 5533  # Second database (different ports)
+    sql_tap_driver: postgres
+    sql_tap_database_url: "postgres://user:pass@localhost:5532/orders"
+```
+
+### Lifecycle Management
+
+kubefwd automatically handles the complete lifecycle:
+
+- **Starting**: Port-forward starts first, then sql-tapd after a brief delay
+- **Stopping**: sql-tapd stops first, then the port-forward
+- **Errors**: If sql-tapd fails, the port-forward is also stopped
+- **Retries**: When auto-retry is enabled, both processes restart together
+- **Background mode**: Works seamlessly with `--background` flag
+
+No manual intervention needed - just configure and use!
 
 ### How It Works
 

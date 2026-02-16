@@ -372,6 +372,7 @@ type ProxyForward struct {
 	mu            sync.Mutex
 	context       string
 	namespace     string
+	sqlTapManager *SqlTapManager // Manages sql-tapd process if enabled
 }
 
 // NewProxyForward creates a new proxy forward instance
@@ -379,12 +380,32 @@ func NewProxyForward(proxyService ProxyService, podManager *ProxyPodManager, glo
 	context := proxyService.GetContext(globalContext)
 	namespace := proxyService.GetNamespace(globalNamespace)
 
+	// Initialize sql-tap manager if configured
+	var sqlTapManager *SqlTapManager
+	if proxyService.SqlTapPort != nil {
+		grpcPort := 9091 // Default
+		if proxyService.SqlTapGrpcPort != nil {
+			grpcPort = *proxyService.SqlTapGrpcPort
+		}
+		sqlTapManager = NewSqlTapManager(
+			true,
+			proxyService.SqlTapDriver,
+			proxyService.SqlTapDatabaseUrl,
+			*proxyService.SqlTapPort,
+			proxyService.LocalPort,
+			grpcPort,
+		)
+	} else {
+		sqlTapManager = NewSqlTapManager(false, "", "", 0, 0, 0)
+	}
+
 	return &ProxyForward{
-		ProxyService: proxyService,
-		PodManager:   podManager,
-		Status:       StatusStopped,
-		context:      context,
-		namespace:    namespace,
+		ProxyService:  proxyService,
+		PodManager:    podManager,
+		Status:        StatusStopped,
+		context:       context,
+		namespace:     namespace,
+		sqlTapManager: sqlTapManager,
 	}
 }
 
@@ -402,7 +423,7 @@ func (pf *ProxyForward) Start() error {
 	if !exists {
 		pf.Status = StatusError
 		pf.ErrorMessage = "Service not found in proxy pod"
-		return fmt.Errorf(pf.ErrorMessage)
+		return fmt.Errorf("%s", pf.ErrorMessage)
 	}
 
 	pf.Status = StatusStarting
@@ -447,6 +468,32 @@ func (pf *ProxyForward) Start() error {
 	go pf.monitor(&stderr)
 
 	pf.Status = StatusRunning
+	
+	// Start sql-tap if enabled
+	if pf.sqlTapManager.IsEnabled() {
+		// Unlock before starting sql-tap to avoid deadlock
+		pf.mu.Unlock()
+		
+		// Wait briefly for port-forward to be ready
+		time.Sleep(2 * time.Second)
+		
+		// Start sql-tapd
+		if err := pf.sqlTapManager.Start(); err != nil {
+			// If sql-tap fails, stop the port-forward
+			pf.mu.Lock()
+			debugLog("Failed to start sql-tapd for proxy %s: %v", pf.ProxyService.Name, err)
+			pf.Status = StatusError
+			pf.ErrorMessage = fmt.Sprintf("sql-tap failed: %v", err)
+			if pf.cancel != nil {
+				pf.cancel()
+			}
+			return err
+		}
+		
+		// Re-lock for the deferred unlock
+		pf.mu.Lock()
+	}
+	
 	return nil
 }
 
@@ -479,6 +526,13 @@ func (pf *ProxyForward) Stop() error {
 		return nil
 	}
 
+	// Stop sql-tap first if enabled
+	if pf.sqlTapManager.IsEnabled() {
+		pf.mu.Unlock()
+		pf.sqlTapManager.Stop()
+		pf.mu.Lock()
+	}
+
 	if pf.cancel != nil {
 		pf.cancel()
 		pf.cancel = nil
@@ -503,4 +557,8 @@ func (pf *ProxyForward) GetStatus() (PortForwardStatus, string) {
 	return pf.Status, pf.ErrorMessage
 }
 
+// GetSqlTapManager returns the sql-tap manager for this proxy forward
+func (pf *ProxyForward) GetSqlTapManager() *SqlTapManager {
+	return pf.sqlTapManager
+}
 

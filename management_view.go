@@ -305,6 +305,14 @@ func (m ManagementModel) renderLeftPane(width int) string {
 		line := fmt.Sprintf("%s%s%s %-18s %s :%d → %s:%d",
 			cursor, defaultIndicator, overrideIndicator, displayName, statusText, svc.LocalPort, svc.ServiceName, svc.RemotePort)
 
+		// Add sql-tap status if enabled
+		sqlTapMgr := pf.GetSqlTapManager()
+		if sqlTapMgr.IsEnabled() {
+			sqlTapStatus, _ := sqlTapMgr.GetStatus()
+			sqlTapStatusText := m.formatStatus(sqlTapStatus, false, 0, 0)
+			line += fmt.Sprintf(" [SQL-TAP %s:%d gRPC:%d]", sqlTapStatusText, sqlTapMgr.GetListenPort(), sqlTapMgr.GetGrpcPort())
+		}
+
 		// Show detailed context/namespace info only if toggle is on
 		if m.showOverrides && hasOverrides {
 			overrides := ""
@@ -416,6 +424,7 @@ func (m ManagementModel) renderRightPane(width int) string {
 
 		// Show port forward status if active
 		statusText := ""
+		sqlTapText := ""
 		if isActive {
 			if pxf, exists := m.proxyForwards[pxSvc.Name]; exists {
 				status, _ := pxf.GetStatus()
@@ -424,6 +433,14 @@ func (m ManagementModel) renderRightPane(width int) string {
 					statusText = statusRunningStyle.Render("●")
 				case StatusError:
 					statusText = statusErrorStyle.Render("✗")
+				}
+				
+				// Add sql-tap status if enabled
+				sqlTapMgr := pxf.GetSqlTapManager()
+				if sqlTapMgr.IsEnabled() {
+					sqlTapStatus, _ := sqlTapMgr.GetStatus()
+					sqlTapStatusSymbol := m.formatStatus(sqlTapStatus, false, 0, 0)
+					sqlTapText = fmt.Sprintf(" [ST %s:%d/%d]", sqlTapStatusSymbol, sqlTapMgr.GetListenPort(), sqlTapMgr.GetGrpcPort())
 				}
 			}
 		}
@@ -441,6 +458,9 @@ func (m ManagementModel) renderRightPane(width int) string {
 		line := fmt.Sprintf("%s %s", checkbox, displayName)
 		if statusText != "" {
 			line += " " + statusText
+		}
+		if sqlTapText != "" {
+			line += sqlTapText
 		}
 		b.WriteString(line)
 		b.WriteString("\n")

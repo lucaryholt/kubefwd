@@ -279,6 +279,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Check if sql-tapd is available if any service uses it
+	sqlTapRequired := false
+	for _, svc := range config.Services {
+		if svc.SqlTapPort != nil {
+			sqlTapRequired = true
+			break
+		}
+	}
+	if !sqlTapRequired {
+		for _, pxSvc := range config.ProxyServices {
+			if pxSvc.SqlTapPort != nil {
+				sqlTapRequired = true
+				break
+			}
+		}
+	}
+	if sqlTapRequired {
+		if err := CheckSqlTapdAvailable(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			fmt.Fprintf(os.Stderr, "sql-tap features will not work. Install sql-tap from https://github.com/mickamy/sql-tap\n")
+		}
+	}
+
 	// Run in background mode if --background flag is set
 	if *backgroundFlag {
 		runBackgroundMode(config, *defaultFlag, *defaultProxyFlag)
