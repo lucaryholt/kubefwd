@@ -58,12 +58,6 @@ type ProxyService struct {
 	Context           string `yaml:"context,omitempty"`     // Optional: override cluster context
 	Namespace         string `yaml:"namespace,omitempty"`   // Optional: override namespace
 	MaxRetries        *int   `yaml:"max_retries,omitempty"` // Optional: override global max_retries
-	
-	// SQL-Tap configuration for query inspection
-	SqlTapPort     *int   `yaml:"sql_tap_port,omitempty"`      // Enable sql-tap on this port (internal port for proxy connection)
-	SqlTapGrpcPort *int   `yaml:"sql_tap_grpc_port,omitempty"` // gRPC port for TUI (default: 9091)
-	SqlTapDriver   string `yaml:"sql_tap_driver,omitempty"`    // "postgres" or "mysql"
-	SqlTapDsnEnv   string `yaml:"sql_tap_dsn_env,omitempty"`   // DSN env var for EXPLAIN (default: "DATABASE_URL")
 }
 
 // GetContext returns the service-specific context or falls back to global context
@@ -88,27 +82,6 @@ func (ps *ProxyService) GetMaxRetries(globalMaxRetries int) int {
 		return *ps.MaxRetries
 	}
 	return globalMaxRetries
-}
-
-// IsSqlTapEnabled returns true if SQL-Tap is configured for this service
-func (ps *ProxyService) IsSqlTapEnabled() bool {
-	return ps.SqlTapPort != nil
-}
-
-// GetSqlTapGrpcPort returns the gRPC port for SQL-Tap TUI
-func (ps *ProxyService) GetSqlTapGrpcPort() int {
-	if ps.SqlTapGrpcPort != nil {
-		return *ps.SqlTapGrpcPort
-	}
-	return 9091 // Default
-}
-
-// GetSqlTapPort returns the internal port for SQL-Tap proxy
-func (ps *ProxyService) GetSqlTapPort() int {
-	if ps.SqlTapPort != nil {
-		return *ps.SqlTapPort
-	}
-	return 0
 }
 
 // GetContext returns the service-specific context or falls back to global context
@@ -206,40 +179,6 @@ func LoadConfig(filepath string) (*Config, error) {
 		}
 		if pxSvc.LocalPort <= 0 || pxSvc.LocalPort > 65535 {
 			return nil, fmt.Errorf("proxy_service %d (%s): invalid local_port", i, pxSvc.Name)
-		}
-		
-		// Validate SQL-Tap configuration
-		if pxSvc.SqlTapPort != nil {
-			// sql_tap_driver is required when sql_tap_port is set
-			if pxSvc.SqlTapDriver == "" {
-				return nil, fmt.Errorf("proxy_service %d (%s): sql_tap_driver is required when sql_tap_port is set", i, pxSvc.Name)
-			}
-			// Validate driver type
-			if pxSvc.SqlTapDriver != "postgres" && pxSvc.SqlTapDriver != "mysql" {
-				return nil, fmt.Errorf("proxy_service %d (%s): sql_tap_driver must be 'postgres' or 'mysql'", i, pxSvc.Name)
-			}
-			// sql_tap_port must be different from local_port
-			if *pxSvc.SqlTapPort == pxSvc.LocalPort {
-				return nil, fmt.Errorf("proxy_service %d (%s): sql_tap_port must be different from local_port", i, pxSvc.Name)
-			}
-			// Validate sql_tap_port range
-			if *pxSvc.SqlTapPort <= 0 || *pxSvc.SqlTapPort > 65535 {
-				return nil, fmt.Errorf("proxy_service %d (%s): invalid sql_tap_port", i, pxSvc.Name)
-			}
-			// Set default gRPC port if not specified
-			if pxSvc.SqlTapGrpcPort == nil {
-				defaultGrpcPort := 9091
-				config.ProxyServices[i].SqlTapGrpcPort = &defaultGrpcPort
-			} else {
-				// Validate grpc port range
-				if *pxSvc.SqlTapGrpcPort <= 0 || *pxSvc.SqlTapGrpcPort > 65535 {
-					return nil, fmt.Errorf("proxy_service %d (%s): invalid sql_tap_grpc_port", i, pxSvc.Name)
-				}
-			}
-			// Set default DSN env if not specified
-			if pxSvc.SqlTapDsnEnv == "" {
-				config.ProxyServices[i].SqlTapDsnEnv = "DATABASE_URL"
-			}
 		}
 	}
 

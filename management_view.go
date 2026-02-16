@@ -114,8 +114,7 @@ func (m ManagementModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				pf.Stop()
 			}
 			for _, pxf := range m.proxyForwards {
-				// Use Cleanup() to stop both port-forward and sql-tapd
-				pxf.Cleanup()
+				pxf.Stop()
 			}
 			// Delete the proxy pod if it exists
 			if m.proxyPodManager != nil {
@@ -140,23 +139,6 @@ func (m ManagementModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				pf.Stop()
 			} else {
 				pf.Start()
-			}
-
-		case "K":
-			// Kill conflicting process on the selected service
-			pf := m.portForwards[m.cursor]
-			conflictInfo := pf.GetConflictInfo()
-			if conflictInfo.HasConflict && conflictInfo.ProcessPID > 0 {
-				if err := KillProcess(conflictInfo.ProcessPID); err == nil {
-					// Clear conflict and try to start again
-					pf.ClearConflict()
-					pf.Start()
-				} else {
-					// Update error message if kill failed
-					pf.mu.Lock()
-					pf.ErrorMessage = fmt.Sprintf("Failed to kill PID %d: %v", conflictInfo.ProcessPID, err)
-					pf.mu.Unlock()
-				}
 			}
 
 		case "a":
@@ -294,7 +276,6 @@ func (m ManagementModel) renderLeftPane(width int) string {
 
 		status, errMsg := pf.GetStatus()
 		retrying, retryAttempt, maxRetries := pf.GetRetryInfo()
-		conflictInfo := pf.GetConflictInfo()
 		statusText := m.formatStatus(status, retrying, retryAttempt, maxRetries)
 
 		svc := pf.Service
@@ -303,16 +284,6 @@ func (m ManagementModel) renderLeftPane(width int) string {
 		defaultIndicator := " "
 		if svc.SelectedByDefault {
 			defaultIndicator = "★"
-		}
-
-		// Conflict indicator
-		conflictIndicator := " "
-		if conflictInfo.HasConflict {
-			if conflictInfo.IsKubectl {
-				conflictIndicator = "⚠"
-			} else {
-				conflictIndicator = "⚠"
-			}
 		}
 
 		// Truncate service name if too long
@@ -331,8 +302,8 @@ func (m ManagementModel) renderLeftPane(width int) string {
 			overrideIndicator = "⚙"
 		}
 
-		line := fmt.Sprintf("%s%s%s%s %-18s %s :%d → %s:%d",
-			cursor, conflictIndicator, defaultIndicator, overrideIndicator, displayName, statusText, svc.LocalPort, svc.ServiceName, svc.RemotePort)
+		line := fmt.Sprintf("%s%s%s %-18s %s :%d → %s:%d",
+			cursor, defaultIndicator, overrideIndicator, displayName, statusText, svc.LocalPort, svc.ServiceName, svc.RemotePort)
 
 		// Show detailed context/namespace info only if toggle is on
 		if m.showOverrides && hasOverrides {
@@ -370,7 +341,7 @@ func (m ManagementModel) renderLeftPane(width int) string {
 	b.WriteString("\n")
 	
 	// Row 1: Navigation and service controls
-	helpRow1 := "↑↓/jk:nav • s:toggle • K:kill • d:def • a:all • x:stop • o:overrides"
+	helpRow1 := "↑↓/jk:nav • s:toggle • d:def • a:all • x:stop • o:overrides"
 	b.WriteString(helpStyle.Render(helpRow1))
 	b.WriteString("\n")
 	
@@ -387,20 +358,6 @@ func (m ManagementModel) renderLeftPane(width int) string {
 	}
 	helpRow2 += "g:config • q:quit"
 	b.WriteString(helpStyle.Render(helpRow2))
-	
-	// SQL-Tap info if any service has it enabled
-	hasSqlTap := false
-	for _, pxf := range m.proxyForwards {
-		if pxf.IsSqlTapEnabled() {
-			hasSqlTap = true
-			break
-		}
-	}
-	if hasSqlTap {
-		b.WriteString("\n\n")
-		sqlTapHelp := "📊 SQL-Tap enabled services can be inspected with: sql-tap localhost:<grpc_port>"
-		b.WriteString(helpStyle.Render(sqlTapHelp))
-	}
 
 	// Render in a styled box with dynamic width
 	leftStyle := lipgloss.NewStyle().
@@ -459,7 +416,6 @@ func (m ManagementModel) renderRightPane(width int) string {
 
 		// Show port forward status if active
 		statusText := ""
-		sqlTapIndicator := ""
 		if isActive {
 			if pxf, exists := m.proxyForwards[pxSvc.Name]; exists {
 				status, _ := pxf.GetStatus()
@@ -469,17 +425,12 @@ func (m ManagementModel) renderRightPane(width int) string {
 				case StatusError:
 					statusText = statusErrorStyle.Render("✗")
 				}
-				
-				// Add SQL-Tap indicator if enabled
-				if pxf.IsSqlTapEnabled() {
-					sqlTapIndicator = " 📊"
-				}
 			}
 		}
 
 		// Truncate service name if too long for right pane
 		displayName := pxSvc.Name
-		maxNameWidth := width - 16 // Account for checkbox, padding, status, and sql-tap indicator
+		maxNameWidth := width - 12 // Account for checkbox, padding, and status
 		if maxNameWidth < 10 {
 			maxNameWidth = 10
 		}
@@ -490,9 +441,6 @@ func (m ManagementModel) renderRightPane(width int) string {
 		line := fmt.Sprintf("%s %s", checkbox, displayName)
 		if statusText != "" {
 			line += " " + statusText
-		}
-		if sqlTapIndicator != "" {
-			line += sqlTapIndicator
 		}
 		b.WriteString(line)
 		b.WriteString("\n")

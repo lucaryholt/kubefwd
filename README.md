@@ -7,13 +7,11 @@ A TUI tool for managing Kubernetes port forwards to GKE services and proxy conne
 - 🎮 Real-time port forward management for all services
 - ⚡ Start/stop individual services or all at once
 - ☁️ Proxy pod support for GCP services (CloudSQL, MemoryStore, etc.)
-- 📊 SQL-Tap integration for real-time database query inspection
 - 🎯 Quick-start default services with one key press
 - 📋 Presets for quickly starting predefined sets of services
 - 🔄 Switch between cluster contexts on-the-fly with safety confirmation
 - 🌐 Per-service context and namespace overrides
 - 🔁 Automatic retry with exponential backoff when connections fail
-- ⚠️ Automatic port conflict detection with kubectl port-forward identification
 - ⚙️ YAML-based configuration
 - 📊 Automatic status monitoring
 - 🔍 Debug mode to troubleshoot kubectl commands
@@ -23,7 +21,6 @@ A TUI tool for managing Kubernetes port forwards to GKE services and proxy conne
 - Go 1.16 or later
 - `kubectl` installed and configured
 - Access to a GKE cluster
-- `sql-tapd` (optional, for SQL query inspection) - Install: `brew install --cask mickamy/tap/sql-tap`
 
 ## Installation
 
@@ -223,7 +220,6 @@ This is useful when you want to quickly start your common services without manua
 
 **Service Control:**
 - `Enter` or `s`: Start/stop the selected service
-- `K`: Kill conflicting process using the port (when port conflict detected)
 - `d`: Start all services marked with `selected_by_default: true`
 - `a`: Start all services
 - `x`: Stop all services
@@ -246,44 +242,11 @@ This is useful when you want to quickly start your common services without manua
 - ⚡ Direct services (kubectl port-forward to Kubernetes services)
 - ☁️ Proxy services (proxy pod connections to GCP resources)
 - Services marked as default show a `★` (star) indicator
-- Services with port conflicts show a `⚠` (warning) indicator
 - Services with context/namespace overrides show a `⚙` (gear) icon
 - Press `o` to toggle detailed override information `[ctx: name]` and/or `[ns: name]`
 - Error messages are displayed below failed services with full kubectl command for debugging
 - Proxy pod status shows creation state and number of active connections
 - UI automatically adapts to your terminal width for optimal display
-
-### Port Conflict Detection
-
-kubefwd automatically detects port conflicts when launching and provides helpful resolution options:
-
-**On Startup:**
-- All configured local ports are checked for conflicts
-- Services with port conflicts are marked with a `⚠` (warning) indicator
-- Error messages identify if the conflict is from a kubectl port-forward or another process
-- Includes the PID of the conflicting process for easy resolution
-
-**When Starting a Service:**
-- Port availability is re-checked before starting each service
-- Prevents failed starts due to port conflicts
-- Shows helpful error message with PID information
-
-**Resolving Conflicts:**
-1. Navigate to the service with the port conflict (shown with `⚠` indicator)
-2. Press `K` to kill the conflicting process
-3. The service will automatically attempt to start after killing the process
-4. If the kill fails, an error message will be displayed
-
-**Example Error Messages:**
-- `Port already in use by kubectl port-forward (PID: 12345). Press 'K' to kill it.`
-- `Port already in use by PID 12345. Press 'K' to kill it.`
-- `Port already in use by another process`
-
-This feature is especially useful when:
-- You have background kubectl port-forward processes running
-- Another tool is using the same port
-- You accidentally started the same service multiple times
-- You want to quickly replace a running port-forward
 
 ### Background Mode
 
@@ -557,148 +520,6 @@ proxy_pod_namespace: proxy-infra
 - **Proxy Pod Location**: The proxy pod itself is created in the configured proxy_pod_context/proxy_pod_namespace
 - **Network Requirements**: The proxy pod must have network access to the target GCP resources (VPC peering, etc.)
 
-## SQL Traffic Inspection (SQL-Tap Integration)
-
-kubefwd integrates with [sql-tap](https://github.com/mickamy/sql-tap) to enable real-time inspection of SQL queries flowing through proxy connections to databases like CloudSQL.
-
-### What is SQL-Tap?
-
-SQL-Tap is a transparent SQL traffic viewer that sits between your application and database, capturing every query in real-time. It provides:
-- Live query monitoring in an interactive terminal UI
-- Query inspection with parameters
-- Transaction tracking
-- EXPLAIN/EXPLAIN ANALYZE support
-- Support for PostgreSQL and MySQL
-
-### How It Works
-
-When SQL-Tap is enabled for a proxy service, the connection flow becomes:
-
-```
-Application → localhost:5432 → sql-tapd → localhost:5433 → kubectl port-forward → proxy pod → CloudSQL
-                                    ↓
-                                gRPC:9091 → sql-tap TUI (query inspection)
-```
-
-The `sql-tapd` daemon intercepts database traffic on the user-facing port and forwards it to an internal port where the actual proxy connection exists. Queries are captured and exposed via gRPC for the `sql-tap` TUI client to display.
-
-### Configuration
-
-Add SQL-Tap configuration to any proxy service in your `.kubefwd.yaml`:
-
-```yaml
-proxy_services:
-  - name: CloudSQL Production
-    target_host: 10.1.2.3
-    target_port: 5432
-    local_port: 5432
-    selected_by_default: false
-    # SQL-Tap configuration
-    sql_tap_port: 5433              # Internal port (must differ from local_port)
-    sql_tap_grpc_port: 9091         # gRPC port for TUI (optional, defaults to 9091)
-    sql_tap_driver: postgres        # Required: "postgres" or "mysql"
-    sql_tap_dsn_env: DATABASE_URL   # Optional: env var with DSN for EXPLAIN (defaults to DATABASE_URL)
-
-  - name: MySQL Production
-    target_host: 10.1.4.6
-    target_port: 3306
-    local_port: 3306
-    selected_by_default: false
-    sql_tap_port: 3307
-    sql_tap_grpc_port: 9092         # Use different gRPC port for each service
-    sql_tap_driver: mysql
-```
-
-**Configuration Fields:**
-- `sql_tap_port` (required to enable): Internal port for the actual proxy connection (must be different from `local_port`)
-- `sql_tap_grpc_port` (optional): gRPC port for the TUI client (defaults to 9091)
-- `sql_tap_driver` (required when enabled): Database driver - must be `"postgres"` or `"mysql"`
-- `sql_tap_dsn_env` (optional): Environment variable containing DSN for EXPLAIN support (defaults to `"DATABASE_URL"`)
-
-### Usage
-
-1. **Start the proxy service with SQL-Tap enabled** in kubefwd
-2. **Connect your application** to `localhost:<local_port>` as normal
-3. **Launch the SQL-Tap TUI** in a separate terminal:
-   ```bash
-   sql-tap localhost:9091
-   ```
-4. **Run queries** from your application - they'll appear in real-time in the TUI
-5. **Use SQL-Tap keybindings** to inspect queries, run EXPLAIN, copy queries, etc.
-
-### UI Indicators
-
-Proxy services with SQL-Tap enabled show a 📊 indicator in the management view:
-
-```
-┌────────────────────────────────────┬─────────────────────────┐
-│ kubefwd                             │ Proxy Services          │
-│                                     │                         │
-│ Cluster: Production                 │ Pod: ● Ready (1)        │
-│ Namespace: default                  │                         │
-│                                     │ [✓] CloudSQL Prod ● 📊  │
-│                                     │ [ ] MySQL Prod          │
-│                                     │                         │
-│ 📊 SQL-Tap enabled services can be  │ Press 'r' to manage     │
-│ inspected with:                     │                         │
-│ sql-tap localhost:<grpc_port>       │                         │
-└────────────────────────────────────┴─────────────────────────┘
-```
-
-### Persistent Mode
-
-The `sql-tapd` daemon remains running even when you stop the proxy service in kubefwd. This allows you to:
-- Inspect query history after stopping the connection
-- Keep monitoring queries while restarting the proxy
-- Avoid losing captured query data
-
-The daemon is only stopped when:
-- You quit kubefwd entirely (press `q`)
-- You remove the service from your configuration
-
-### Installation
-
-SQL-Tap must be installed separately:
-
-```bash
-# macOS (Homebrew)
-brew install --cask mickamy/tap/sql-tap
-
-# Go
-go install github.com/mickamy/sql-tap@latest
-go install github.com/mickamy/sql-tap/cmd/sql-tapd@latest
-
-# Docker
-# See https://github.com/mickamy/sql-tap for Docker instructions
-```
-
-If `sql-tapd` is not installed, kubefwd will show an error when trying to start a service with SQL-Tap enabled.
-
-### Troubleshooting
-
-**SQL-Tap fails to start:**
-- Check if `sql-tapd` is installed: `which sql-tapd`
-- Verify driver is correct (`postgres` or `mysql`)
-- Check if `sql_tap_port` is available: `lsof -i :<port>`
-- Enable debug mode: `./kubefwd --debug` to see sql-tapd command
-
-**No queries appearing in TUI:**
-- Verify application is connected to the correct port
-- Check if sql-tapd is running: `ps aux | grep sql-tapd`
-- Verify gRPC port matches between config and TUI command
-- Check for firewall issues blocking gRPC port
-
-**Port conflicts:**
-- Use different `sql_tap_grpc_port` for each service (9091, 9092, 9093, etc.)
-- Ensure `sql_tap_port` doesn't conflict with `local_port` or other services
-- Check existing port usage: `lsof -i :<port>`
-
-**EXPLAIN not working:**
-- Set `sql_tap_dsn_env` to the correct environment variable
-- Ensure the environment variable contains a valid DSN
-- Example for PostgreSQL: `DATABASE_URL="postgres://user:pass@localhost:5432/db"`
-- Example for MySQL: `DATABASE_URL="user:pass@tcp(localhost:3306)/db"`
-
 ## Automatic Retry Feature
 
 The tool automatically retries failed port forwards with exponential backoff to handle transient network issues and connection drops.
@@ -806,8 +627,6 @@ Some screens (like proxy service selection) appear as centered modal overlays:
 12. **Background Mode**: Run as a daemon with `--background &` for CI/CD, Docker containers, or long-running development environments
 13. **Multiple Environments**: Use different config files (`--config`) with background mode to run separate instances for different environments
 14. **Shell Background**: Remember to use `&` at the end of background mode commands to free up your terminal
-15. **SQL Query Debugging**: Enable SQL-Tap on database proxy services to inspect queries in real-time - perfect for debugging N+1 queries and slow queries
-16. **SQL-Tap Persistence**: SQL-Tap keeps running when you stop the proxy, allowing you to review query history even after disconnecting
 
 ## Troubleshooting
 

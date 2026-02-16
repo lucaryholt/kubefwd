@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,21 +21,12 @@ const (
 	StatusError    PortForwardStatus = "error"
 )
 
-// PortConflictInfo contains information about a port conflict
-type PortConflictInfo struct {
-	HasConflict    bool
-	IsKubectl      bool
-	ProcessPID     int
-	ProcessCommand string
-}
-
 // PortForward manages a single kubectl port-forward process
 type PortForward struct {
 	Service       Service
 	Status        PortForwardStatus
 	ErrorMessage  string
 	CommandString string
-	ConflictInfo  PortConflictInfo // Information about port conflicts
 	cmd           *exec.Cmd
 	cancel        context.CancelFunc
 	mu            sync.Mutex
@@ -55,7 +45,7 @@ func NewPortForward(service Service, globalContext, globalNamespace string, glob
 	namespace := service.GetNamespace(globalNamespace)
 	maxRetries := service.GetMaxRetries(globalMaxRetries)
 	
-	pf := &PortForward{
+	return &PortForward{
 		Service:    service,
 		Status:     StatusStopped,
 		context:    context,
@@ -65,23 +55,6 @@ func NewPortForward(service Service, globalContext, globalNamespace string, glob
 		manualStop: false,
 		retrying:   false,
 	}
-	
-	// Check for port conflicts on initialization
-	pf.ConflictInfo = DetectPortConflict(service.LocalPort)
-	if pf.ConflictInfo.HasConflict {
-		pf.Status = StatusError
-		if pf.ConflictInfo.IsKubectl {
-			pf.ErrorMessage = fmt.Sprintf("Port already in use by kubectl port-forward (PID: %d). Press 'K' to kill it.", 
-				pf.ConflictInfo.ProcessPID)
-		} else if pf.ConflictInfo.ProcessPID > 0 {
-			pf.ErrorMessage = fmt.Sprintf("Port already in use by PID %d. Press 'K' to kill it.", 
-				pf.ConflictInfo.ProcessPID)
-		} else {
-			pf.ErrorMessage = "Port already in use by another process"
-		}
-	}
-	
-	return pf
 }
 
 // Start initiates the kubectl port-forward process
@@ -91,24 +64,6 @@ func (pf *PortForward) Start() error {
 
 	if pf.Status == StatusRunning || pf.Status == StatusStarting {
 		return fmt.Errorf("port forward already running")
-	}
-
-	// Check for port conflicts before starting
-	conflictInfo := DetectPortConflict(pf.Service.LocalPort)
-	if conflictInfo.HasConflict {
-		pf.ConflictInfo = conflictInfo
-		pf.Status = StatusError
-		if conflictInfo.IsKubectl {
-			pf.ErrorMessage = fmt.Sprintf("Port already in use by kubectl port-forward (PID: %d). Press 'K' to kill it.", 
-				conflictInfo.ProcessPID)
-		} else if conflictInfo.ProcessPID > 0 {
-			pf.ErrorMessage = fmt.Sprintf("Port already in use by PID %d. Press 'K' to kill it.", 
-				conflictInfo.ProcessPID)
-		} else {
-			pf.ErrorMessage = "Port already in use by another process"
-		}
-		pf.manualStop = true // Prevent retries
-		return fmt.Errorf("port %d already in use", pf.Service.LocalPort)
 	}
 
 	pf.Status = StatusStarting
@@ -200,16 +155,7 @@ func (pf *PortForward) monitor(stderr *strings.Builder) {
 			
 			// Attempt to restart
 			if err := pf.Start(); err != nil {
-				// Check if Start() set manualStop (e.g., port conflict)
 				pf.mu.Lock()
-				if pf.manualStop {
-					// This is a permanent error (port conflict, etc.) - don't retry further
-					pf.Status = StatusError
-					pf.retrying = false
-					// Error message already set by Start()
-					pf.mu.Unlock()
-					return
-				}
 				pf.Status = StatusError
 				pf.ErrorMessage = fmt.Sprintf("Retry failed: %v", err)
 				pf.mu.Unlock()
@@ -296,106 +242,5 @@ func ValidateContext(context string) error {
 		return fmt.Errorf("context '%s' not found", context)
 	}
 	return nil
-}
-
-// isPortAvailable checks if a port is available for use
-func isPortAvailable(port int) bool {
-	// Try to listen on IPv4 (127.0.0.1)
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return false
-	}
-	listener.Close()
-	
-	// Try to listen on IPv6 ([::1])
-	listener6, err := net.Listen("tcp", fmt.Sprintf("[::1]:%d", port))
-	if err != nil {
-		// If IPv6 fails but IPv4 succeeded, the port is still considered unavailable
-		// because something might be using it on IPv6
-		return false
-	}
-	listener6.Close()
-	
-	return true
-}
-
-// DetectPortConflict checks if a port is in use and tries to identify the process
-func DetectPortConflict(port int) PortConflictInfo {
-	info := PortConflictInfo{
-		HasConflict: false,
-		IsKubectl:   false,
-	}
-
-	// First check if port is available
-	if isPortAvailable(port) {
-		return info
-	}
-
-	info.HasConflict = true
-
-	// Try to identify the process using the port
-	// Use lsof to find the process (works on macOS and Linux)
-	cmd := exec.Command("lsof", "-i", fmt.Sprintf(":%d", port), "-t")
-	output, err := cmd.Output()
-	if err == nil && len(output) > 0 {
-		pidStr := strings.TrimSpace(string(output))
-		lines := strings.Split(pidStr, "\n")
-		if len(lines) > 0 {
-			var pid int
-			fmt.Sscanf(lines[0], "%d", &pid)
-			if pid > 0 {
-				info.ProcessPID = pid
-				
-				// Get process command line
-				psCmd := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "command=")
-				cmdOutput, err := psCmd.Output()
-				if err == nil {
-					info.ProcessCommand = strings.TrimSpace(string(cmdOutput))
-					// Check if it's a kubectl port-forward
-					if strings.Contains(info.ProcessCommand, "kubectl") && 
-					   strings.Contains(info.ProcessCommand, "port-forward") {
-						info.IsKubectl = true
-					}
-				}
-			}
-		}
-	}
-
-	return info
-}
-
-// KillProcess attempts to kill a process by PID
-func KillProcess(pid int) error {
-	if pid <= 0 {
-		return fmt.Errorf("invalid PID")
-	}
-	
-	cmd := exec.Command("kill", fmt.Sprintf("%d", pid))
-	return cmd.Run()
-}
-
-// HasPortConflict returns true if this port forward has a detected conflict
-func (pf *PortForward) HasPortConflict() bool {
-	pf.mu.Lock()
-	defer pf.mu.Unlock()
-	return pf.ConflictInfo.HasConflict
-}
-
-// GetConflictInfo returns the conflict information
-func (pf *PortForward) GetConflictInfo() PortConflictInfo {
-	pf.mu.Lock()
-	defer pf.mu.Unlock()
-	return pf.ConflictInfo
-}
-
-// ClearConflict clears the conflict status (e.g., after killing the process)
-func (pf *PortForward) ClearConflict() {
-	pf.mu.Lock()
-	defer pf.mu.Unlock()
-	pf.ConflictInfo = PortConflictInfo{HasConflict: false}
-	if pf.Status == StatusError && strings.Contains(pf.ErrorMessage, "Port already in use") {
-		pf.Status = StatusStopped
-		pf.ErrorMessage = ""
-	}
 }
 
