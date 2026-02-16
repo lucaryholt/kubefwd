@@ -349,7 +349,7 @@ func (m ManagementModel) renderLeftPane(width int) string {
 	b.WriteString("\n")
 	
 	// Row 1: Navigation and service controls
-	helpRow1 := "↑↓/jk:nav • s:toggle • d:def • a:all • x:stop • o:overrides"
+	helpRow1 := "↑↓/jk:nav • s:toggle • t:sql-tap • d:def • a:all • x:stop • o:overrides"
 	b.WriteString(helpStyle.Render(helpRow1))
 	b.WriteString("\n")
 	

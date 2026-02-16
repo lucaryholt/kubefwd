@@ -19,23 +19,25 @@ const (
 	ScreenProxySelection
 	ScreenConfig
 	ScreenPortChecker
+	ScreenSqlTapSelection
 )
 
 // AppModel is the root model that manages screen transitions
 type AppModel struct {
-	screen              ScreenType
-	config              *Config
-	configPath          string
-	managementModel     ManagementModel
-	contextModel        ContextSelectionModel
-	confirmModel        ConfirmationModel
-	presetModel         PresetSelectionModel
-	proxySelectionModel ProxySelectionModel
-	configModel         ConfigModel
-	portCheckerModel    PortCheckerModel
-	targetContextOption ContextOption
-	width               int
-	height              int
+	screen               ScreenType
+	config               *Config
+	configPath           string
+	managementModel      ManagementModel
+	contextModel         ContextSelectionModel
+	confirmModel         ConfirmationModel
+	presetModel          PresetSelectionModel
+	proxySelectionModel  ProxySelectionModel
+	configModel          ConfigModel
+	portCheckerModel     PortCheckerModel
+	sqlTapSelectionModel SqlTapSelectionModel
+	targetContextOption  ContextOption
+	width                int
+	height               int
 }
 
 // NewAppModel creates a new app model
@@ -102,6 +104,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateConfig(msg)
 	case ScreenPortChecker:
 		return m.updatePortChecker(msg)
+	case ScreenSqlTapSelection:
+		return m.updateSqlTapSelection(msg)
 	}
 	return m, nil
 }
@@ -140,6 +144,14 @@ func (m AppModel) updateManagement(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = ScreenPortChecker
 			m.portCheckerModel = NewPortCheckerModel(m.config, m.managementModel.portForwards, m.managementModel.proxyForwards)
 			return m, m.portCheckerModel.Init()
+		} else if keyMsg.String() == "t" {
+			// Open sql-tap selection screen
+			m.screen = ScreenSqlTapSelection
+			m.sqlTapSelectionModel = NewSqlTapSelectionModel(
+				m.managementModel.portForwards,
+				m.managementModel.proxyForwards,
+			)
+			return m, m.sqlTapSelectionModel.Init()
 		}
 	}
 
@@ -302,6 +314,32 @@ func (m AppModel) updatePortChecker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m AppModel) updateSqlTapSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updatedModel, cmd := m.sqlTapSelectionModel.Update(msg)
+	m.sqlTapSelectionModel = updatedModel.(SqlTapSelectionModel)
+
+	if m.sqlTapSelectionModel.cancelled {
+		// Return to management
+		m.screen = ScreenManagement
+		return m, nil
+	}
+
+	if m.sqlTapSelectionModel.launched {
+		// Launch sql-tap and return to management
+		item := m.sqlTapSelectionModel.GetSelectedItem()
+		if err := LaunchSqlTapInNewTab(item.GrpcPort); err != nil {
+			debugLog("Failed to launch sql-tap: %v", err)
+			debugLog("Run manually: %s", GetSqlTapLaunchCommand(item.GrpcPort))
+		} else {
+			debugLog("Successfully launched sql-tap for %s on gRPC port %d", item.Name, item.GrpcPort)
+		}
+		m.screen = ScreenManagement
+		return m, nil
+	}
+
+	return m, cmd
+}
+
 func (m AppModel) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle config reload message
 	if _, ok := msg.(configReloadMsg); ok {
@@ -418,6 +456,8 @@ func (m AppModel) View() string {
 		return m.configModel.View()
 	case ScreenPortChecker:
 		return m.portCheckerModel.View()
+	case ScreenSqlTapSelection:
+		return m.sqlTapSelectionModel.View()
 	}
 	return ""
 }
