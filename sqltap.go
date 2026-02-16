@@ -153,9 +153,15 @@ func (stm *SqlTapManager) Stop() error {
 		return nil // Already stopped
 	}
 
+	// Cancel the context to stop the process
 	if stm.cancel != nil {
 		stm.cancel()
 		stm.cancel = nil
+	}
+	
+	// Also explicitly kill the process if it's still running
+	if stm.cmd != nil && stm.cmd.Process != nil {
+		stm.cmd.Process.Kill()
 	}
 
 	stm.status = StatusStopped

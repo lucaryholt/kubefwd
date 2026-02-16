@@ -313,9 +313,33 @@ func main() {
 
 	// Start the Bubble Tea program
 	p := tea.NewProgram(model, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error running program: %v\n", err)
 		os.Exit(1)
+	}
+	
+	// Cleanup after program exits
+	if appModel, ok := finalModel.(AppModel); ok {
+		// Stop all port forwards
+		for _, pf := range appModel.managementModel.portForwards {
+			if pf.IsRunning() {
+				pf.Stop()
+			}
+		}
+		
+		// Stop all proxy forwards
+		for _, pxf := range appModel.managementModel.proxyForwards {
+			pxf.Stop()
+		}
+		
+		// Delete proxy pod
+		if appModel.managementModel.proxyPodManager != nil {
+			appModel.managementModel.proxyPodManager.DeletePod()
+		}
+		
+		// Give processes a moment to clean up
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 

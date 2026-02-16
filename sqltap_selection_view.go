@@ -5,17 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-)
-
-var (
-	serviceTypeDirectStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("33")).
-		Bold(true)
-	
-	serviceTypeProxyStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("170")).
-		Bold(true)
 )
 
 // SqlTapItem represents a service with sql-tap enabled
@@ -114,15 +103,23 @@ func (m SqlTapSelectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m SqlTapSelectionModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("kubefwd - Launch SQL-Tap"))
+	b.WriteString(StyleH1.Render("Launch SQL-Tap"))
+	b.WriteString("\n\n")
+	
+	// Add description
+	descText := StyleBodySecondary.Render("SQL-Tap allows you to monitor and analyze SQL queries in real-time.")
+	b.WriteString(descText)
+	b.WriteString("\n")
+	descText2 := StyleBodySecondary.Render("Select a service with SQL-Tap enabled to launch the monitoring interface.")
+	b.WriteString(descText2)
 	b.WriteString("\n\n")
 
 	if len(m.items) == 0 {
-		b.WriteString(dimStyle.Render("No sql-tap services are currently running."))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("Start a service with sql-tap enabled first."))
+		emptyMsg := EmptyState("No sql-tap services are currently running.", "Start a service with sql-tap enabled first.")
+		b.WriteString(emptyMsg)
 		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("esc: back"))
+		helpShortcuts := []string{"esc: back"}
+		b.WriteString(HelpText(helpShortcuts))
 		return b.String()
 	}
 
@@ -130,25 +127,25 @@ func (m SqlTapSelectionModel) View() string {
 	for i, item := range m.items {
 		cursor := "  "
 		if m.cursor == i {
-			cursor = cursorStyle.Render("▶ ")
+			cursor = StyleCursor.Render("▶ ")
 		}
 
-		// Format service type with color
+		// Format service type with badge
 		var serviceTypeText string
 		if item.ServiceType == "DIRECT" {
-			serviceTypeText = serviceTypeDirectStyle.Render("[DIRECT]")
+			serviceTypeText = Badge("DIRECT", "info")
 		} else {
-			serviceTypeText = serviceTypeProxyStyle.Render("[PROXY]")
+			serviceTypeText = Badge("PROXY", "warning")
 		}
 
 		// Status indicator
-		statusText := statusRunningStyle.Render("●")
+		statusIndicator := StatusIndicator(item.Status, false, 0, 0)
 
 		line := fmt.Sprintf("%s%-25s %s %s gRPC:%d",
 			cursor,
 			item.Name,
 			serviceTypeText,
-			statusText,
+			statusIndicator,
 			item.GrpcPort,
 		)
 
@@ -157,7 +154,8 @@ func (m SqlTapSelectionModel) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓: navigate • enter: launch • esc: back"))
+	helpShortcuts := []string{"↑/↓: navigate", "enter: launch", "esc: back"}
+	b.WriteString(HelpText(helpShortcuts))
 
 	return b.String()
 }

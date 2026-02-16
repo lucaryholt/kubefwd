@@ -7,25 +7,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-)
-
-var (
-	portStatusFreeStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("240"))
-
-	portStatusKubefwdStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("42")).
-				Bold(true)
-
-	portStatusExternalStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("214")).
-				Bold(true)
-
-	portTableHeaderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("205")).
-				Bold(true).
-				Underline(true)
 )
 
 // PortInfo represents information about a single port
@@ -238,46 +219,52 @@ func (m PortCheckerModel) View() string {
 	var b strings.Builder
 
 	// Title
-	b.WriteString(titleStyle.Render("Port Status Checker"))
+	b.WriteString(StyleH1.Render("Port Status Checker"))
+	b.WriteString("\n\n")
+	
+	// Add description
+	descText := StyleBodySecondary.Render("Check which ports are in use and identify processes that may be blocking your services.")
+	b.WriteString(descText)
+	b.WriteString("\n")
+	descText2 := StyleBodySecondary.Render("You can kill conflicting processes directly from this screen.")
+	b.WriteString(descText2)
 	b.WriteString("\n\n")
 
 	// Cluster info
-	clusterDisplay := m.config.ClusterContext
-	if m.config.ClusterName != "" {
-		clusterDisplay = m.config.ClusterName + " (" + m.config.ClusterContext + ")"
-	}
-	b.WriteString(fmt.Sprintf("Cluster: %s | Namespace: %s\n\n", clusterDisplay, m.config.Namespace))
+	clusterInfo := ClusterInfo(m.config.ClusterContext, m.config.ClusterName, m.config.Namespace)
+	b.WriteString(clusterInfo)
+	b.WriteString("\n\n")
 
 	// Error message
 	if m.errorMessage != "" {
-		b.WriteString(statusErrorStyle.Render(m.errorMessage))
+		b.WriteString(ErrorMessage(m.errorMessage, 80))
 		b.WriteString("\n\n")
 	}
 
 	// Loading indicator
 	if m.loading {
-		b.WriteString(statusStartingStyle.Render("Loading port information..."))
+		b.WriteString(LoadingSpinner("Loading port information..."))
 		b.WriteString("\n")
 	} else {
 		// Table header
 		header := fmt.Sprintf("%-7s %-25s %-8s %-12s %-8s %s",
 			"Port", "Service", "Type", "Status", "PID", "Process")
-		b.WriteString(portTableHeaderStyle.Render(header))
+		b.WriteString(StyleTableHeader.Render(header))
 		b.WriteString("\n")
 
 		// Separator
-		b.WriteString(strings.Repeat("─", 100))
+		b.WriteString(Divider(100))
 		b.WriteString("\n")
 
 		// Port list
 		if len(m.ports) == 0 {
-			b.WriteString(helpStyle.Render("No ports configured"))
+			b.WriteString(EmptyState("No ports configured", ""))
 			b.WriteString("\n")
 		} else {
 			for i, port := range m.ports {
 				cursor := "  "
 				if m.cursor == i {
-					cursor = cursorStyle.Render("▶ ")
+					cursor = StyleCursor.Render("▶ ")
 				}
 
 				// Format status with color
@@ -290,15 +277,8 @@ func (m PortCheckerModel) View() string {
 				}
 
 				// Truncate service name and process info if too long
-				serviceName := port.ServiceName
-				if len(serviceName) > 24 {
-					serviceName = serviceName[:21] + "..."
-				}
-
-				processInfo := port.ProcessInfo
-				if len(processInfo) > 40 {
-					processInfo = processInfo[:37] + "..."
-				}
+				serviceName := TruncateString(port.ServiceName, 24)
+				processInfo := TruncateString(port.ProcessInfo, 40)
 
 				line := fmt.Sprintf("%s%-7d %-25s %-8s %-12s %-8s %s",
 					cursor,
@@ -315,7 +295,7 @@ func (m PortCheckerModel) View() string {
 
 				// Show error if present
 				if port.Error != "" {
-					b.WriteString(fmt.Sprintf("     %s", statusErrorStyle.Render("Error: "+port.Error)))
+					b.WriteString(fmt.Sprintf("     %s", ErrorMessage("Error: "+port.Error, 80)))
 					b.WriteString("\n")
 				}
 			}
@@ -324,8 +304,8 @@ func (m PortCheckerModel) View() string {
 
 	// Help text
 	b.WriteString("\n")
-	helpText := "↑↓/jk:nav • K:kill • r:refresh • esc:back"
-	b.WriteString(helpStyle.Render(helpText))
+	helpShortcuts := []string{"↑↓/jk: nav", "K: kill", "r: refresh", "esc: back"}
+	b.WriteString(HelpText(helpShortcuts))
 
 	return b.String()
 }
@@ -333,40 +313,28 @@ func (m PortCheckerModel) View() string {
 func (m PortCheckerModel) renderKillConfirmation() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("Confirm Kill Process"))
+	b.WriteString(StyleH2.Render("Confirm Kill Process"))
 	b.WriteString("\n\n")
 
 	if m.killStatus == PortStatusKubefwd {
-		b.WriteString(statusErrorStyle.Render(fmt.Sprintf(
+		b.WriteString(WarningMessage(fmt.Sprintf(
 			"⚠ Kill kubefwd process (PID %d)?\n\nService: %s\n\nThis will stop the port forward.",
 			m.killPID, m.killService)))
 	} else {
-		b.WriteString(statusErrorStyle.Render(fmt.Sprintf(
+		b.WriteString(WarningMessage(fmt.Sprintf(
 			"⚠ Kill external process (PID %d)?\n\nService: %s\n\nThis process is not managed by kubefwd.",
 			m.killPID, m.killService)))
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("y:confirm • n:cancel"))
+	helpShortcuts := []string{"y: confirm", "n: cancel"}
+	b.WriteString(HelpText(helpShortcuts))
 
-	// Center the modal
-	modalStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("205")).
-		Padding(1, 2).
-		Background(lipgloss.Color("235")).
-		MaxWidth(60)
-
-	modal := modalStyle.Render(b.String())
+	// Use new modal component
+	modal := Modal("Confirm Kill Process", b.String(), 60, 0)
 
 	if m.width > 0 && m.height > 0 {
-		return lipgloss.Place(
-			m.width,
-			m.height,
-			lipgloss.Center,
-			lipgloss.Center,
-			modal,
-		)
+		return CenterContent(modal, m.width, m.height)
 	}
 
 	return modal
@@ -375,12 +343,12 @@ func (m PortCheckerModel) renderKillConfirmation() string {
 func (m PortCheckerModel) formatStatus(status PortStatus) string {
 	switch status {
 	case PortStatusFree:
-		return portStatusFreeStyle.Render("✓ FREE")
+		return Badge("FREE", "default")
 	case PortStatusKubefwd:
-		return portStatusKubefwdStyle.Render("● KUBEFWD")
+		return Badge("KUBEFWD", "success")
 	case PortStatusExternal:
-		return portStatusExternalStyle.Render("⚠ EXTERNAL")
+		return Badge("EXTERNAL", "warning")
 	default:
-		return portStatusFreeStyle.Render("? UNKNOWN")
+		return Badge("UNKNOWN", "default")
 	}
 }

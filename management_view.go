@@ -9,54 +9,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("205")).
-			MarginBottom(1)
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
-	statusRunningStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42")).
-			Bold(true)
-
-	statusStoppedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
-
-	statusStartingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214"))
-
-	statusErrorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
-			Bold(true)
-
-	statusRetryingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true)
-
-	cursorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("205"))
-)
-
 // ManagementModel represents the state of the management screen
 type ManagementModel struct {
-	services        []Service
-	portForwards    []*PortForward
-	proxyServices   []ProxyService
-	proxyPodManager *ProxyPodManager
-	proxyForwards   map[string]*ProxyForward // Map of service name to forward
-	cursor          int
-	config          *Config
-	quitting        bool
-	width           int
-	height          int
-	showOverrides   bool // Toggle for showing context/namespace override details
+	services           []Service
+	portForwards       []*PortForward
+	proxyServices      []ProxyService
+	proxyPodManager    *ProxyPodManager
+	proxyForwards      map[string]*ProxyForward // Map of service name to forward
+	proxySelectedState map[string]bool          // Staged selection state (what user wants)
+	cursor             int
+	proxyCursor        int    // Cursor position for proxy services pane
+	config             *Config
+	quitting           bool
+	width              int
+	height             int
+	showOverrides      bool   // Toggle for showing context/namespace override details
+	focusedPane        string // "port_forwards" or "proxy_services"
 }
 
 // tickMsg is sent periodically to update the view
 type tickMsg time.Time
+
+// proxyApplyCompleteMsg is sent when proxy selection is applied
+type proxyApplyCompleteMsg struct {
+	proxyForwards map[string]*ProxyForward
+	err           error
+}
 
 // NewManagementModel creates a new management model with all services
 func NewManagementModel(config *Config) ManagementModel {
@@ -80,15 +58,24 @@ func NewManagementModel(config *Config) ManagementModel {
 		)
 	}
 
+	// Initialize proxy selected state - all services start unselected
+	proxySelectedState := make(map[string]bool)
+	for _, pxSvc := range proxyServices {
+		proxySelectedState[pxSvc.Name] = false
+	}
+
 	return ManagementModel{
-		services:        services,
-		portForwards:    portForwards,
-		proxyServices:   proxyServices,
-		proxyPodManager: proxyPodManager,
-		proxyForwards:   make(map[string]*ProxyForward),
-		cursor:          0,
-		config:          config,
-		quitting:        false,
+		services:           services,
+		portForwards:       portForwards,
+		proxyServices:      proxyServices,
+		proxyPodManager:    proxyPodManager,
+		proxyForwards:      make(map[string]*ProxyForward),
+		proxySelectedState: proxySelectedState,
+		cursor:             0,
+		proxyCursor:        0,
+		config:             config,
+		quitting:           false,
+		focusedPane:        "port_forwards",
 	}
 }
 
@@ -105,6 +92,30 @@ func tick() tea.Cmd {
 
 func (m ManagementModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case proxyApplyCompleteMsg:
+		// Proxy apply completed (success or error)
+		if msg.err != nil {
+			debugLog("Proxy apply failed: %v", msg.err)
+		} else {
+			// Update the model with the created proxy forwards
+			m.proxyForwards = msg.proxyForwards
+			
+			// Sync the staged state with actual active services
+			if m.proxyPodManager != nil {
+				activeServiceNames := m.proxyPodManager.GetActiveServiceNames()
+				activeMap := make(map[string]bool)
+				for _, name := range activeServiceNames {
+					activeMap[name] = true
+				}
+				
+				// Update staged state to match active state
+				for _, pxSvc := range m.proxyServices {
+					m.proxySelectedState[pxSvc.Name] = activeMap[pxSvc.Name]
+				}
+			}
+		}
+		return m, nil
+		
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -122,27 +133,85 @@ func (m ManagementModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 
+		case "tab":
+			// Switch focus between panes
+			if len(m.proxyServices) > 0 {
+				if m.focusedPane == "port_forwards" {
+					m.focusedPane = "proxy_services"
+				} else {
+					m.focusedPane = "port_forwards"
+				}
+			}
+
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
+			// Navigate based on focused pane
+			if m.focusedPane == "port_forwards" {
+				if m.cursor > 0 {
+					m.cursor--
+				}
+			} else if m.focusedPane == "proxy_services" {
+				if m.proxyCursor > 0 {
+					m.proxyCursor--
+				}
 			}
 
 		case "down", "j":
-			if m.cursor < len(m.services)-1 {
-				m.cursor++
+			// Navigate based on focused pane
+			if m.focusedPane == "port_forwards" {
+				if m.cursor < len(m.services)-1 {
+					m.cursor++
+				}
+			} else if m.focusedPane == "proxy_services" {
+				if m.proxyCursor < len(m.proxyServices)-1 {
+					m.proxyCursor++
+				}
+			}
+
+		case " ":
+			// Space bar - toggle based on focused pane
+			if m.focusedPane == "port_forwards" {
+				// Toggle port forward service immediately
+				if m.cursor >= 0 && m.cursor < len(m.portForwards) {
+					pf := m.portForwards[m.cursor]
+					if pf.IsRunning() {
+						pf.Stop()
+					} else {
+						pf.Start()
+					}
+				}
+			} else if m.focusedPane == "proxy_services" {
+				// Toggle staged selection (don't apply yet)
+				if m.proxyCursor >= 0 && m.proxyCursor < len(m.proxyServices) {
+					selectedSvc := m.proxyServices[m.proxyCursor]
+					m.proxySelectedState[selectedSvc.Name] = !m.proxySelectedState[selectedSvc.Name]
+				}
 			}
 
 		case "enter", "s":
-			// Toggle the current service
-			pf := m.portForwards[m.cursor]
-			if pf.IsRunning() {
-				pf.Stop()
-			} else {
-				pf.Start()
+			// Enter - toggle or apply based on focused pane
+			if m.focusedPane == "port_forwards" {
+				// Toggle port forward service immediately
+				if m.cursor >= 0 && m.cursor < len(m.portForwards) {
+					pf := m.portForwards[m.cursor]
+					if pf.IsRunning() {
+						pf.Stop()
+					} else {
+						pf.Start()
+					}
+				}
+			} else if m.focusedPane == "proxy_services" {
+				// Apply the staged selections asynchronously
+				var selectedServices []ProxyService
+				for _, pxSvc := range m.proxyServices {
+					if m.proxySelectedState[pxSvc.Name] {
+						selectedServices = append(selectedServices, pxSvc)
+					}
+				}
+				return m, m.applyProxySelectionAsync(selectedServices)
 			}
 
 		case "a":
-			// Start all services
+			// Start all port forward services
 			for _, pf := range m.portForwards {
 				if !pf.IsRunning() {
 					pf.Start()
@@ -150,15 +219,25 @@ func (m ManagementModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "d":
-			// Start all default services
-			for i, pf := range m.portForwards {
-				if m.services[i].SelectedByDefault && !pf.IsRunning() {
-					pf.Start()
+			// Start all default services based on focused pane
+			if m.focusedPane == "port_forwards" {
+				// Start all default port forward services
+				for i, pf := range m.portForwards {
+					if m.services[i].SelectedByDefault && !pf.IsRunning() {
+						pf.Start()
+					}
+				}
+			} else if m.focusedPane == "proxy_services" {
+				// Set staged state for default proxy services
+				for _, pxSvc := range m.proxyServices {
+					if pxSvc.SelectedByDefault {
+						m.proxySelectedState[pxSvc.Name] = true
+					}
 				}
 			}
 
 		case "x":
-			// Stop all services
+			// Stop all port forward services
 			for _, pf := range m.portForwards {
 				if pf.IsRunning() {
 					pf.Stop()
@@ -183,134 +262,173 @@ func (m ManagementModel) View() string {
 		return "Stopping all port forwards...\n"
 	}
 
-	// Calculate pane widths
-	leftWidth, rightWidth := m.calculatePaneWidths()
-
-	// Build left pane (direct services)
-	leftPane := m.renderLeftPane(leftWidth)
-
-	// Build right pane (proxy services)
-	rightPane := m.renderRightPane(rightWidth)
-
-	// Use lipgloss to create split view with equal heights
-	if rightPane != "" {
-		// Make sure both panes have the same height
-		leftHeight := lipgloss.Height(leftPane)
-		rightHeight := lipgloss.Height(rightPane)
-		maxHeight := leftHeight
-		if rightHeight > maxHeight {
-			maxHeight = rightHeight
+	// If we have proxy services, render split panes
+	if len(m.proxyServices) > 0 {
+		// Calculate available width for content
+		// The full terminal width has sidebar (25% with 20-40 constraints) + padding
+		totalWidth := m.width
+		if totalWidth <= 0 {
+			totalWidth = 100
 		}
+		
+		sidebarWidth := totalWidth / 4
+		if sidebarWidth < 20 {
+			sidebarWidth = 20
+		}
+		if sidebarWidth > 40 {
+			sidebarWidth = 40
+		}
+		
+		// Available width = total - sidebar - padding (2 left + 2 right)
+		availableWidth := totalWidth - sidebarWidth - 4
+		if availableWidth < 60 {
+			availableWidth = 60
+		}
+		
+		// Split into 70/30
+		leftWidth := int(float64(availableWidth) * 0.7)
+		rightWidth := availableWidth - leftWidth - 3 // Account for border
+		
+		// Build panes with proper widths
+		leftPane := m.renderPortForwardsPane(leftWidth)
+		rightPane := m.renderProxyServicesPane(rightWidth)
 
-		// Set explicit heights for both panes
-		leftStyle := lipgloss.NewStyle().Height(maxHeight)
-		rightStyle := lipgloss.NewStyle().Height(maxHeight)
-
-		return lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(leftPane), rightStyle.Render(rightPane))
+		layout := LayoutSplit{
+			LeftContent:  leftPane,
+			RightContent: rightPane,
+			Width:        availableWidth,
+			Height:       m.height,
+			SplitRatio:   0.7,
+			Vertical:     true,
+		}
+		return layout.Render()
 	}
 
-	return leftPane
+	// No proxy services - just show port forwards
+	return m.renderPortForwardsPane(0)
 }
 
-// calculatePaneWidths returns the left and right pane widths based on terminal size
+// calculatePaneWidths returns the left and right pane widths
 func (m ManagementModel) calculatePaneWidths() (int, int) {
-	// Default minimum widths
-	minLeftWidth := 60
-	minRightWidth := 30
-
-	// If no proxy services, use full width for left pane
+	// The width passed to ManagementModel is the full terminal width
+	// We need to account for the sidebar which takes ~25% of the width
+	
+	totalWidth := m.width
+	if totalWidth <= 0 {
+		totalWidth = 100
+	}
+	
+	// Sidebar takes about 25% of total width (minimum 20, maximum 40)
+	sidebarWidth := totalWidth / 4
+	if sidebarWidth < 20 {
+		sidebarWidth = 20
+	}
+	if sidebarWidth > 40 {
+		sidebarWidth = 40
+	}
+	
+	// Available width for content after sidebar
+	availableWidth := totalWidth - sidebarWidth - 4 // Account for borders and padding
+	
 	if len(m.proxyServices) == 0 {
-		if m.width > 0 {
-			return m.width - 4, 0 // Subtract padding
-		}
-		return 80, 0
+		return availableWidth, 0
 	}
 
-	// If terminal width is available, calculate 70/30 split
-	if m.width > 0 {
-		leftWidth := int(float64(m.width) * 0.7)
-		rightWidth := int(float64(m.width) * 0.3)
-
-		// Apply minimum constraints
-		if leftWidth < minLeftWidth {
-			leftWidth = minLeftWidth
-		}
-		if rightWidth < minRightWidth {
-			rightWidth = minRightWidth
-		}
-
-		// Adjust if total exceeds available width
-		total := leftWidth + rightWidth
-		if total > m.width {
-			leftWidth = m.width - rightWidth
-		}
-
-		return leftWidth, rightWidth
-	}
-
-	// Fallback to defaults
-	return 80, 35
+	// Split content area 70/30
+	leftWidth := int(float64(availableWidth) * 0.7)
+	rightWidth := availableWidth - leftWidth
+	
+	return leftWidth, rightWidth
 }
 
-func (m ManagementModel) renderLeftPane(width int) string {
+// renderPortForwardsPane renders the port forwards pane
+func (m ManagementModel) renderPortForwardsPane(width int) string {
 	var b strings.Builder
 
-	// Title
-	b.WriteString(titleStyle.Render("kubefwd"))
+	// Pane indicator - more visible with border
+	var paneIndicator string
+	if m.focusedPane == "port_forwards" {
+		activeStyle := lipgloss.NewStyle().
+			Foreground(ColorPrimaryBlue).
+			Background(lipgloss.AdaptiveColor{Light: "#D1ECF1", Dark: "#1C2F3A"}).
+			Bold(true).
+			Padding(0, 1)
+		paneIndicator = activeStyle.Render("● ACTIVE")
+	} else {
+		inactiveStyle := lipgloss.NewStyle().
+			Foreground(ColorDimGray).
+			Padding(0, 1)
+		paneIndicator = inactiveStyle.Render("○ Press Tab")
+	}
+
+	// Header with running count
+	runningCount := 0
+	for _, pf := range m.portForwards {
+		if pf.IsRunning() {
+			runningCount++
+		}
+	}
+
+	header := Header("Port Forwards", runningCount, len(m.services))
+	b.WriteString(header)
+	b.WriteString(" ")
+	b.WriteString(paneIndicator)
 	b.WriteString("\n\n")
 
 	// Cluster info
-	clusterDisplay := m.config.ClusterContext
-	if m.config.ClusterName != "" {
-		clusterDisplay = m.config.ClusterName + " (" + m.config.ClusterContext + ")"
+	clusterInfo := ClusterInfo(m.config.ClusterContext, m.config.ClusterName, m.config.Namespace)
+	b.WriteString(clusterInfo)
+	b.WriteString("\n\n")
+
+	// Divider - use a reasonable default width
+	contentWidth := 50 // Fixed width for content
+	if width > 4 {
+		contentWidth = width - 4
 	}
-	b.WriteString(fmt.Sprintf("Cluster: %s\n", clusterDisplay))
-	b.WriteString(fmt.Sprintf("Namespace: %s\n\n", m.config.Namespace))
+	b.WriteString(Divider(contentWidth))
+	b.WriteString("\n\n")
 
 	// Service list
 	for i, pf := range m.portForwards {
-		cursor := "  "
-		if m.cursor == i {
-			cursor = cursorStyle.Render("▶ ")
+		cursor := ""
+		if m.focusedPane == "port_forwards" && m.cursor == i {
+			cursor = "▶"
 		}
 
 		status, errMsg := pf.GetStatus()
 		retrying, retryAttempt, maxRetries := pf.GetRetryInfo()
-		statusText := m.formatStatus(status, retrying, retryAttempt, maxRetries)
-
 		svc := pf.Service
-
-		// Default indicator
-		defaultIndicator := " "
-		if svc.SelectedByDefault {
-			defaultIndicator = "★"
-		}
-
-		// Truncate service name if too long
-		displayName := svc.Name
-		if len(displayName) > 18 {
-			displayName = displayName[:17] + "…"
-		}
 
 		// Check if service has overrides
 		hasOverrides := (svc.Context != "" && svc.Context != m.config.ClusterContext) ||
 			(svc.Namespace != "" && svc.Namespace != m.config.Namespace)
 
-		// Show override indicator
-		overrideIndicator := " "
-		if hasOverrides {
-			overrideIndicator = "⚙"
-		}
+		// Build service line
+		serviceLine := ServiceLine(ServiceLineOptions{
+			Cursor:       cursor,
+			IsDefault:    svc.SelectedByDefault,
+			HasOverrides: hasOverrides,
+			Name:         TruncateString(svc.Name, 20),
+			Status:       status,
+			Retrying:     retrying,
+			RetryAttempt: retryAttempt,
+			MaxRetries:   maxRetries,
+			LocalPort:    svc.LocalPort,
+			ServiceName:  svc.ServiceName,
+			RemotePort:   svc.RemotePort,
+			ShowBadge:    false,
+		})
 
-		line := fmt.Sprintf("%s%s%s %-18s %s :%d → %s:%d",
-			cursor, defaultIndicator, overrideIndicator, displayName, statusText, svc.LocalPort, svc.ServiceName, svc.RemotePort)
+		b.WriteString(serviceLine)
 
 		// Add sql-tap status if enabled
 		sqlTapMgr := pf.GetSqlTapManager()
 		if sqlTapMgr.IsEnabled() {
 			sqlTapStatus, _ := sqlTapMgr.GetStatus()
-			sqlTapStatusText := m.formatStatus(sqlTapStatus, false, 0, 0)
-			line += fmt.Sprintf(" [SQL-TAP %s:%d gRPC:%d]", sqlTapStatusText, sqlTapMgr.GetListenPort(), sqlTapMgr.GetGrpcPort())
+			sqlTapStatusSymbol := StatusIndicator(sqlTapStatus, false, 0, 0)
+			sqlTapInfo := fmt.Sprintf(" %s SQL-TAP :%d (gRPC:%d)",
+				sqlTapStatusSymbol, sqlTapMgr.GetListenPort(), sqlTapMgr.GetGrpcPort())
+			b.WriteString(StyleBodySecondary.Render(sqlTapInfo))
 		}
 
 		// Show detailed context/namespace info only if toggle is on
@@ -322,69 +440,78 @@ func (m ManagementModel) renderLeftPane(width int) string {
 			if svc.Namespace != "" && svc.Namespace != m.config.Namespace {
 				overrides += fmt.Sprintf(" [ns: %s]", svc.Namespace)
 			}
-			line += helpStyle.Render(overrides)
-		}
-
-		b.WriteString(line)
-
-		// Show error message if present
-		if status == StatusError && errMsg != "" {
-			b.WriteString("\n")
-			// Calculate wrap width based on pane width
-			wrapWidth := width - 10 // Account for indentation and padding
-			if wrapWidth < 40 {
-				wrapWidth = 40
-			}
-			errorLines := wrapText(errMsg, wrapWidth)
-			for _, errorLine := range errorLines {
-				b.WriteString(fmt.Sprintf("     %s", statusErrorStyle.Render(errorLine)))
-				b.WriteString("\n")
-			}
+			b.WriteString(StyleHelp.Render(overrides))
 		}
 
 		b.WriteString("\n")
+
+		// Show error message if present
+		if status == StatusError && errMsg != "" {
+			wrapWidth := contentWidth - 10
+			if wrapWidth < 40 {
+				wrapWidth = 40
+			}
+			errorLines := WrapText(errMsg, wrapWidth)
+			for _, errorLine := range errorLines {
+				b.WriteString(fmt.Sprintf("     %s", ErrorMessage(errorLine, wrapWidth)))
+				b.WriteString("\n")
+			}
+		}
 	}
 
-	// Help text - split into two rows
+	// Quick Actions Bar
 	b.WriteString("\n")
-	
-	// Row 1: Navigation and service controls
-	helpRow1 := "↑↓/jk:nav • s:toggle • t:sql-tap • d:def • a:all • x:stop • o:overrides"
-	b.WriteString(helpStyle.Render(helpRow1))
-	b.WriteString("\n")
-	
-	// Row 2: Mode switches and quit
-	helpRow2 := ""
-	if len(m.config.Presets) > 0 {
-		helpRow2 += "p:presets • "
-	}
-	if len(m.config.AlternativeContexts) > 0 {
-		helpRow2 += "c:context • "
-	}
-	if len(m.proxyServices) > 0 {
-		helpRow2 += "r:proxy • "
-	}
-	helpRow2 += "l:ports • g:config • q:quit"
-	b.WriteString(helpStyle.Render(helpRow2))
+	b.WriteString(SectionDivider("QUICK ACTIONS", contentWidth))
+	b.WriteString("\n\n")
 
-	// Render in a styled box with dynamic width
-	leftStyle := lipgloss.NewStyle().
-		Width(width).
-		PaddingLeft(2).
-		PaddingRight(2)
+	quickActions := QuickActionBar([]struct{ Label, Hotkey, Type string }{
+		{Label: "Start Defaults", Hotkey: "D", Type: "primary"},
+		{Label: "Start All", Hotkey: "A", Type: "success"},
+		{Label: "Stop All", Hotkey: "X", Type: "danger"},
+	})
+	b.WriteString(quickActions)
+	b.WriteString("\n\n")
 
-	return leftStyle.Render(b.String())
+	// Help text
+	helpShortcuts := []string{
+		"↑↓/jk: navigate",
+		"Enter: toggle",
+		"Tab: switch pane",
+		"?: help",
+	}
+	b.WriteString(HelpText(helpShortcuts))
+
+	return b.String()
 }
 
-func (m ManagementModel) renderRightPane(width int) string {
+// renderProxyServicesPane renders the proxy services pane
+func (m ManagementModel) renderProxyServicesPane(width int) string {
 	if len(m.proxyServices) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 
+	// Pane indicator - more visible with border
+	var paneIndicator string
+	if m.focusedPane == "proxy_services" {
+		activeStyle := lipgloss.NewStyle().
+			Foreground(ColorPrimaryBlue).
+			Background(lipgloss.AdaptiveColor{Light: "#D1ECF1", Dark: "#1C2F3A"}).
+			Bold(true).
+			Padding(0, 1)
+		paneIndicator = activeStyle.Render("● ACTIVE")
+	} else {
+		inactiveStyle := lipgloss.NewStyle().
+			Foreground(ColorDimGray).
+			Padding(0, 1)
+		paneIndicator = inactiveStyle.Render("○ Press Tab")
+	}
+
 	// Title
-	b.WriteString(titleStyle.Render("Proxy Services"))
+	b.WriteString(StyleH2.Render("Proxy Services"))
+	b.WriteString(" ")
+	b.WriteString(paneIndicator)
 	b.WriteString("\n\n")
 
 	// Pod status
@@ -395,182 +522,155 @@ func (m ManagementModel) renderRightPane(width int) string {
 		if activeCount > 0 {
 			b.WriteString(fmt.Sprintf(" (%d)", activeCount))
 		}
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 		
-		// Show full error message wrapped to fit pane
+		// Show helpful message when pod is creating
+		if podStatus == ProxyPodStatusCreating {
+			creatingStyle := lipgloss.NewStyle().
+				Foreground(ColorAccentAmber).
+				Bold(true)
+			creatingMsg := creatingStyle.Render("⏳ Creating proxy pod... This may take a moment.")
+			b.WriteString(creatingMsg)
+			b.WriteString("\n")
+		}
+		
+		b.WriteString("\n")
+
+		// Show error if present
 		if podStatus == ProxyPodStatusError && podErr != "" {
-			// Calculate wrap width based on pane width
-			wrapWidth := width - 8 // Account for padding and border
+			wrapWidth := width - 8
 			if wrapWidth < 20 {
 				wrapWidth = 20
 			}
-			errorLines := wrapText(podErr, wrapWidth)
+			errorLines := WrapText(podErr, wrapWidth)
 			for _, line := range errorLines {
-				b.WriteString(statusErrorStyle.Render(line))
+				b.WriteString(ErrorMessage(line, wrapWidth))
 				b.WriteString("\n")
 			}
 			b.WriteString("\n")
 		}
 	}
 
-	// Proxy service list
+	// Check if there are pending changes
+	hasChanges := false
 	for _, pxSvc := range m.proxyServices {
+		isStaged := m.proxySelectedState[pxSvc.Name]
 		isActive := m.proxyPodManager != nil && m.proxyPodManager.IsServiceActive(pxSvc.Name)
+		if isStaged != isActive {
+			hasChanges = true
+			break
+		}
+	}
 
-		checkbox := "[ ]"
-		if isActive {
-			checkbox = checkboxStyle.Render("[✓]")
+	// Show pending changes banner
+	if hasChanges {
+		warningStyle := lipgloss.NewStyle().Foreground(ColorAccentAmber)
+		b.WriteString(warningStyle.Render("⚠ Changes pending - Press Enter to apply"))
+		b.WriteString("\n\n")
+	}
+
+	// Proxy service list
+	for i, pxSvc := range m.proxyServices {
+		cursor := "  "
+		if m.focusedPane == "proxy_services" && m.proxyCursor == i {
+			cursor = StyleCursor.Render("▶ ")
+		}
+
+		// Get staged and active states
+		isStaged := m.proxySelectedState[pxSvc.Name]
+		isActive := m.proxyPodManager != nil && m.proxyPodManager.IsServiceActive(pxSvc.Name)
+		isSynced := isStaged == isActive
+
+		// Checkbox based on staged state
+		checkboxText := Checkbox(isStaged, pxSvc.Name)
+
+		// Add sync indicator
+		syncIndicator := ""
+		if !isSynced {
+			syncStyle := lipgloss.NewStyle().Foreground(ColorAccentAmber)
+			syncIndicator = " " + syncStyle.Render("●")
 		}
 
 		// Show port forward status if active
 		statusText := ""
-		sqlTapText := ""
 		if isActive {
 			if pxf, exists := m.proxyForwards[pxSvc.Name]; exists {
 				status, _ := pxf.GetStatus()
-				switch status {
-				case StatusRunning:
-					statusText = statusRunningStyle.Render("●")
-				case StatusError:
-					statusText = statusErrorStyle.Render("✗")
-				}
-				
+				statusText = " " + StatusIndicator(status, false, 0, 0)
+
 				// Add sql-tap status if enabled
 				sqlTapMgr := pxf.GetSqlTapManager()
 				if sqlTapMgr.IsEnabled() {
 					sqlTapStatus, _ := sqlTapMgr.GetStatus()
-					sqlTapStatusSymbol := m.formatStatus(sqlTapStatus, false, 0, 0)
-					sqlTapText = fmt.Sprintf(" [ST %s:%d/%d]", sqlTapStatusSymbol, sqlTapMgr.GetListenPort(), sqlTapMgr.GetGrpcPort())
+					sqlTapStatusSymbol := StatusIndicator(sqlTapStatus, false, 0, 0)
+					statusText += fmt.Sprintf(" [ST %s:%d/%d]",
+						sqlTapStatusSymbol, sqlTapMgr.GetListenPort(), sqlTapMgr.GetGrpcPort())
 				}
 			}
 		}
 
-		// Truncate service name if too long for right pane
-		displayName := pxSvc.Name
-		maxNameWidth := width - 12 // Account for checkbox, padding, and status
-		if maxNameWidth < 10 {
-			maxNameWidth = 10
-		}
-		if len(displayName) > maxNameWidth {
-			displayName = displayName[:maxNameWidth-1] + "…"
-		}
-
-		line := fmt.Sprintf("%s %s", checkbox, displayName)
-		if statusText != "" {
-			line += " " + statusText
-		}
-		if sqlTapText != "" {
-			line += sqlTapText
-		}
+		line := fmt.Sprintf("%s%s%s%s", cursor, checkboxText, syncIndicator, statusText)
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
 	// Footer
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Press 'r' to manage"))
+	helpShortcuts := []string{"Space: toggle", "D: select defaults", "Enter: apply", "Tab: switch pane"}
+	b.WriteString(HelpText(helpShortcuts))
 
-	// Render in a styled box with dynamic width
-	rightStyle := lipgloss.NewStyle().
-		Width(width).
-		PaddingLeft(2).
-		BorderLeft(true).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("240"))
-
-	return rightStyle.Render(b.String())
-}
-
-func (m ManagementModel) formatStatus(status PortForwardStatus, retrying bool, retryAttempt int, maxRetries int) string {
-	if retrying {
-		retryText := fmt.Sprintf("↻ %d", retryAttempt)
-		if maxRetries != -1 {
-			retryText += fmt.Sprintf("/%d", maxRetries)
-		}
-		return statusRetryingStyle.Render(retryText)
-	}
-	
-	switch status {
-	case StatusRunning:
-		return statusRunningStyle.Render("●")
-	case StatusStarting:
-		return statusStartingStyle.Render("◐")
-	case StatusError:
-		return statusErrorStyle.Render("✗")
-	case StatusStopped:
-		return statusStoppedStyle.Render("○")
-	default:
-		return statusStoppedStyle.Render("?")
-	}
+	return b.String()
 }
 
 func (m ManagementModel) formatProxyPodStatus(status ProxyPodStatus) string {
 	switch status {
 	case ProxyPodStatusReady:
-		return statusRunningStyle.Render("● Ready")
+		return StyleStatusRunning.Render("● Ready")
 	case ProxyPodStatusCreating:
-		return statusStartingStyle.Render("◐ Creating")
+		return StyleStatusStarting.Render("◐ Creating")
 	case ProxyPodStatusError:
-		return statusErrorStyle.Render("✗ Error")
+		return StyleStatusError.Render("✗ Error")
 	case ProxyPodStatusNotCreated:
-		return statusStoppedStyle.Render("○ Not Created")
+		return StyleStatusStopped.Render("○ Not Created")
 	default:
-		return statusStoppedStyle.Render("? Unknown")
+		return StyleStatusStopped.Render("? Unknown")
 	}
 }
 
 // ApplyProxySelection updates the proxy pod and port forwards based on selected services
-func (m *ManagementModel) ApplyProxySelection(selectedServices []ProxyService) error {
+// Returns the created proxy forwards map
+func ApplyProxySelection(proxyPodManager *ProxyPodManager, proxyForwards map[string]*ProxyForward, selectedServices []ProxyService, clusterContext, namespace string) (map[string]*ProxyForward, error) {
 	// Stop all existing proxy forwards
-	for _, pxf := range m.proxyForwards {
+	for _, pxf := range proxyForwards {
 		pxf.Stop()
 	}
-	m.proxyForwards = make(map[string]*ProxyForward)
+	newProxyForwards := make(map[string]*ProxyForward)
 
 	// Create pod with selected services
-	if err := m.proxyPodManager.CreatePodWithServices(selectedServices); err != nil {
-		return err
+	if err := proxyPodManager.CreatePodWithServices(selectedServices); err != nil {
+		return newProxyForwards, err
 	}
 
 	// Start port forwards for selected services
 	for _, pxSvc := range selectedServices {
-		pxf := NewProxyForward(pxSvc, m.proxyPodManager, m.config.ClusterContext, m.config.Namespace)
+		pxf := NewProxyForward(pxSvc, proxyPodManager, clusterContext, namespace)
 		if err := pxf.Start(); err != nil {
 			// Log error but continue with other services
 			debugLog("Failed to start proxy forward for %s: %v", pxSvc.Name, err)
 		}
-		m.proxyForwards[pxSvc.Name] = pxf
+		newProxyForwards[pxSvc.Name] = pxf
 	}
 
-	return nil
+	return newProxyForwards, nil
 }
 
-// wrapText wraps text to a maximum width
-func wrapText(text string, width int) []string {
-	if len(text) <= width {
-		return []string{text}
-	}
-
-	var lines []string
-	for len(text) > width {
-		// Try to break at a space
-		breakPoint := width
-		for breakPoint > 0 && text[breakPoint] != ' ' && text[breakPoint] != '|' {
-			breakPoint--
+// applyProxySelectionAsync returns a command that applies proxy selection in the background
+func (m ManagementModel) applyProxySelectionAsync(selectedServices []ProxyService) tea.Cmd {
+	return func() tea.Msg {
+		proxyForwards, err := ApplyProxySelection(m.proxyPodManager, m.proxyForwards, selectedServices, m.config.ClusterContext, m.config.Namespace)
+		return proxyApplyCompleteMsg{
+			proxyForwards: proxyForwards,
+			err:           err,
 		}
-		if breakPoint == 0 {
-			breakPoint = width
-		}
-
-		lines = append(lines, strings.TrimSpace(text[:breakPoint]))
-		text = strings.TrimSpace(text[breakPoint:])
 	}
-	if len(text) > 0 {
-		lines = append(lines, text)
-	}
-
-	return lines
 }
-
-
-

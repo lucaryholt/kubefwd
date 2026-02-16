@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // ScreenType represents the current screen being displayed
@@ -16,10 +14,10 @@ const (
 	ScreenContextSelection
 	ScreenConfirmation
 	ScreenPresetSelection
-	ScreenProxySelection
 	ScreenConfig
 	ScreenPortChecker
 	ScreenSqlTapSelection
+	ScreenHelp
 )
 
 // AppModel is the root model that manages screen transitions
@@ -27,22 +25,25 @@ type AppModel struct {
 	screen               ScreenType
 	config               *Config
 	configPath           string
+	sidebar              SidebarModel
 	managementModel      ManagementModel
 	contextModel         ContextSelectionModel
 	confirmModel         ConfirmationModel
 	presetModel          PresetSelectionModel
-	proxySelectionModel  ProxySelectionModel
 	configModel          ConfigModel
 	portCheckerModel     PortCheckerModel
 	sqlTapSelectionModel SqlTapSelectionModel
+	helpModel            HelpModel
 	targetContextOption  ContextOption
 	width                int
 	height               int
+	sidebarFocused       bool
 }
 
 // NewAppModel creates a new app model
 func NewAppModel(config *Config, configPath string, autoStartDefault, autoStartDefaultProxy bool) AppModel {
 	managementModel := NewManagementModel(config)
+	sidebar := NewSidebarModel(config)
 
 	// Auto-start services if flags are set
 	if autoStartDefault {
@@ -64,7 +65,20 @@ func NewAppModel(config *Config, configPath string, autoStartDefault, autoStartD
 
 		// Apply proxy selection if there are default services
 		if len(defaultProxyServices) > 0 {
-			managementModel.ApplyProxySelection(defaultProxyServices)
+			proxyForwards, err := ApplyProxySelection(
+				managementModel.proxyPodManager,
+				managementModel.proxyForwards,
+				defaultProxyServices,
+				config.ClusterContext,
+				config.Namespace,
+			)
+			if err == nil {
+				managementModel.proxyForwards = proxyForwards
+				// Sync staged state with active services
+				for _, pxSvc := range defaultProxyServices {
+					managementModel.proxySelectedState[pxSvc.Name] = true
+				}
+			}
 		}
 	}
 
@@ -72,7 +86,9 @@ func NewAppModel(config *Config, configPath string, autoStartDefault, autoStartD
 		screen:          ScreenManagement,
 		config:          config,
 		configPath:      configPath,
+		sidebar:         sidebar,
 		managementModel: managementModel,
+		sidebarFocused:  false,
 	}
 }
 
@@ -87,6 +103,32 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.managementModel.width = msg.Width
 		m.managementModel.height = msg.Height
+		m.helpModel.width = msg.Width
+		m.helpModel.height = msg.Height
+	}
+
+	// Handle global sidebar navigation (number keys 1-7) on ALL screens
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		key := keyMsg.String()
+		
+		// Check for number keys (1-7) for sidebar navigation - works globally
+		if key >= "1" && key <= "7" {
+			selected, section := m.sidebar.HandleKey(key)
+			if selected {
+				newScreen := GetSectionScreen(section)
+				if newScreen != m.screen {
+					return m.switchToScreen(newScreen)
+				}
+			}
+			return m, nil
+		}
+		
+		// Check for help key globally
+		if key == "?" {
+			m.screen = ScreenHelp
+			m.helpModel = NewHelpModel()
+			return m, m.helpModel.Init()
+		}
 	}
 
 	switch m.screen {
@@ -98,14 +140,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateConfirmation(msg)
 	case ScreenPresetSelection:
 		return m.updatePresetSelection(msg)
-	case ScreenProxySelection:
-		return m.updateProxySelection(msg)
 	case ScreenConfig:
 		return m.updateConfig(msg)
 	case ScreenPortChecker:
 		return m.updatePortChecker(msg)
 	case ScreenSqlTapSelection:
 		return m.updateSqlTapSelection(msg)
+	case ScreenHelp:
+		return m.updateHelp(msg)
 	}
 	return m, nil
 }
@@ -113,38 +155,34 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m AppModel) updateManagement(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Check for special keys
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		if keyMsg.String() == "c" {
+		key := keyMsg.String()
+		
+		// Legacy hotkey support (backward compatibility)
+		if key == "c" {
 			// Only allow context change if there are alternative contexts
 			if len(m.config.AlternativeContexts) > 0 {
 				m.screen = ScreenContextSelection
 				m.contextModel = NewContextSelectionModel(m.config)
 				return m, m.contextModel.Init()
 			}
-		} else if keyMsg.String() == "p" {
+		} else if key == "p" {
 			// Only allow preset selection if there are presets
 			if len(m.config.Presets) > 0 {
 				m.screen = ScreenPresetSelection
 				m.presetModel = NewPresetSelectionModel(m.config)
 				return m, m.presetModel.Init()
 			}
-		} else if keyMsg.String() == "r" {
-			// Only allow proxy selection if there are proxy services
-			if len(m.config.ProxyServices) > 0 && m.managementModel.proxyPodManager != nil {
-				m.screen = ScreenProxySelection
-				m.proxySelectionModel = NewProxySelectionModel(m.config.ProxyServices, m.managementModel.proxyPodManager)
-				return m, m.proxySelectionModel.Init()
-			}
-		} else if keyMsg.String() == "g" {
+		} else if key == "g" {
 			// Open config management screen
 			m.screen = ScreenConfig
 			m.configModel = NewConfigModel(m.configPath)
 			return m, m.configModel.Init()
-		} else if keyMsg.String() == "l" {
+		} else if key == "l" {
 			// Open port checker screen
 			m.screen = ScreenPortChecker
 			m.portCheckerModel = NewPortCheckerModel(m.config, m.managementModel.portForwards, m.managementModel.proxyForwards)
 			return m, m.portCheckerModel.Init()
-		} else if keyMsg.String() == "t" {
+		} else if key == "t" {
 			// Open sql-tap selection screen
 			m.screen = ScreenSqlTapSelection
 			m.sqlTapSelectionModel = NewSqlTapSelectionModel(
@@ -155,10 +193,46 @@ func (m AppModel) updateManagement(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Update management model
+	// Update management model (handles Tab for pane switching and other keys)
 	updatedModel, cmd := m.managementModel.Update(msg)
 	m.managementModel = updatedModel.(ManagementModel)
 	return m, cmd
+}
+
+// switchToScreen switches to a different screen based on sidebar selection
+func (m AppModel) switchToScreen(screen ScreenType) (tea.Model, tea.Cmd) {
+	m.screen = screen
+	
+	switch screen {
+	case ScreenManagement:
+		return m, nil
+	case ScreenContextSelection:
+		if len(m.config.AlternativeContexts) > 0 {
+			m.contextModel = NewContextSelectionModel(m.config)
+			return m, m.contextModel.Init()
+		}
+	case ScreenPresetSelection:
+		if len(m.config.Presets) > 0 {
+			m.presetModel = NewPresetSelectionModel(m.config)
+			return m, m.presetModel.Init()
+		}
+	case ScreenConfig:
+		m.configModel = NewConfigModel(m.configPath)
+		return m, m.configModel.Init()
+	case ScreenPortChecker:
+		m.portCheckerModel = NewPortCheckerModel(m.config, m.managementModel.portForwards, m.managementModel.proxyForwards)
+		return m, m.portCheckerModel.Init()
+	case ScreenSqlTapSelection:
+		m.sqlTapSelectionModel = NewSqlTapSelectionModel(
+			m.managementModel.portForwards,
+			m.managementModel.proxyForwards,
+		)
+		return m, m.sqlTapSelectionModel.Init()
+	}
+	
+	// Default to management
+	m.screen = ScreenManagement
+	return m, nil
 }
 
 func (m AppModel) updateContextSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -266,41 +340,6 @@ func (m AppModel) applyPreset() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m AppModel) updateProxySelection(msg tea.Msg) (tea.Model, tea.Cmd) {
-	updatedModel, cmd := m.proxySelectionModel.Update(msg)
-	m.proxySelectionModel = updatedModel.(ProxySelectionModel)
-
-	if m.proxySelectionModel.cancelled {
-		// Return to management without changes
-		m.screen = ScreenManagement
-		return m, nil
-	}
-
-	if m.proxySelectionModel.confirmed {
-		// Apply the selection
-		return m.applyProxySelection()
-	}
-
-	return m, cmd
-}
-
-func (m AppModel) applyProxySelection() (tea.Model, tea.Cmd) {
-	selectedServices := m.proxySelectionModel.GetSelectedServices()
-	
-	// Apply selection to management model
-	if err := m.managementModel.ApplyProxySelection(selectedServices); err != nil {
-		// TODO: Show error to user
-		// For now, just log it if debug mode is on
-		if debugMode {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Failed to apply proxy selection: %v\n", err)
-		}
-	}
-
-	// Return to management screen
-	m.screen = ScreenManagement
-	return m, nil
-}
-
 func (m AppModel) updatePortChecker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	updatedModel, cmd := m.portCheckerModel.Update(msg)
 	m.portCheckerModel = updatedModel.(PortCheckerModel)
@@ -333,6 +372,19 @@ func (m AppModel) updateSqlTapSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			debugLog("Successfully launched sql-tap for %s on gRPC port %d", item.Name, item.GrpcPort)
 		}
+		m.screen = ScreenManagement
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+func (m AppModel) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updatedModel, cmd := m.helpModel.Update(msg)
+	m.helpModel = updatedModel.(HelpModel)
+
+	if m.helpModel.cancelled {
+		// Return to management
 		m.screen = ScreenManagement
 		return m, nil
 	}
@@ -428,9 +480,21 @@ func (m AppModel) reloadConfig() (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(servicesToRestart) > 0 {
-			if err := m.managementModel.ApplyProxySelection(servicesToRestart); err != nil {
+			proxyForwards, err := ApplyProxySelection(
+				m.managementModel.proxyPodManager,
+				m.managementModel.proxyForwards,
+				servicesToRestart,
+				m.config.ClusterContext,
+				m.config.Namespace,
+			)
+			if err != nil {
 				m.configModel.message = fmt.Sprintf("Config reloaded, but proxy services failed: %v", err)
 				return m, nil
+			}
+			m.managementModel.proxyForwards = proxyForwards
+			// Sync staged state
+			for _, pxSvc := range servicesToRestart {
+				m.managementModel.proxySelectedState[pxSvc.Name] = true
 			}
 		}
 	}
@@ -440,56 +504,41 @@ func (m AppModel) reloadConfig() (tea.Model, tea.Cmd) {
 }
 
 func (m AppModel) View() string {
+	var mainContent string
+	
 	switch m.screen {
 	case ScreenManagement:
-		return m.managementModel.View()
+		mainContent = m.managementModel.View()
 	case ScreenContextSelection:
-		return m.contextModel.View()
+		mainContent = m.contextModel.View()
 	case ScreenConfirmation:
-		return m.confirmModel.View()
+		mainContent = m.confirmModel.View()
 	case ScreenPresetSelection:
-		return m.presetModel.View()
-	case ScreenProxySelection:
-		// Render proxy selection as modal overlay
-		return m.renderProxySelectionModal()
+		mainContent = m.presetModel.View()
 	case ScreenConfig:
-		return m.configModel.View()
+		mainContent = m.configModel.View()
 	case ScreenPortChecker:
-		return m.portCheckerModel.View()
+		mainContent = m.portCheckerModel.View()
 	case ScreenSqlTapSelection:
-		return m.sqlTapSelectionModel.View()
+		mainContent = m.sqlTapSelectionModel.View()
+	case ScreenHelp:
+		mainContent = m.helpModel.View()
+	default:
+		mainContent = ""
 	}
-	return ""
-}
-
-func (m AppModel) renderProxySelectionModal() string {
-	// Get modal content
-	modalContent := m.proxySelectionModel.View()
-
-	// Create modal box with border and padding
-	modalStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("205")).
-		Padding(1, 2).
-		Background(lipgloss.Color("235")).
-		MaxWidth(70)
-
-	modal := modalStyle.Render(modalContent)
-
-	// Center the modal on the screen
-	if m.width > 0 && m.height > 0 {
-		return lipgloss.Place(
-			m.width,
-			m.height,
-			lipgloss.Center,
-			lipgloss.Center,
-			modal,
-			lipgloss.WithWhitespaceChars(" "),
-			lipgloss.WithWhitespaceForeground(lipgloss.Color("240")),
-		)
+	
+	// Show sidebar on all screens
+	if m.sidebar.IsVisible() {
+		layout := LayoutWithSidebar{
+			SidebarContent: m.sidebar.View(),
+			MainContent:    mainContent,
+			Width:          m.width,
+			Height:         m.height,
+			SidebarVisible: true,
+		}
+		return layout.Render()
 	}
-
-	// Fallback if dimensions not available
-	return modal
+	
+	return mainContent
 }
 

@@ -5,12 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-)
-
-var (
-	presetStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("170"))
 )
 
 // PresetSelectionModel represents the preset selection screen state
@@ -67,26 +61,32 @@ func (m PresetSelectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m PresetSelectionModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("kubefwd - Select Preset"))
+	b.WriteString(StyleH1.Render("Select Preset"))
 	b.WriteString("\n\n")
 
-	b.WriteString(dimStyle.Render("Note: This will stop all running services and start only the preset services."))
+	b.WriteString(WarningMessage("This will stop all running services and start only the preset services."))
+	b.WriteString("\n\n")
+
+	b.WriteString(Divider(60))
 	b.WriteString("\n\n")
 
 	// Preset list
 	for i, preset := range m.presets {
 		cursor := "  "
 		if m.cursor == i {
-			cursor = cursorStyle.Render("▶ ")
+			cursor = StyleCursor.Render("▶ ")
 		}
 
-		line := fmt.Sprintf("%s%s (%d services)", cursor, preset.Name, len(preset.Services))
+		presetName := StyleBodyPrimary.Copy().Bold(true).Render(preset.Name)
+		serviceCount := StyleBodySecondary.Render(fmt.Sprintf("(%d services)", len(preset.Services)))
+		line := fmt.Sprintf("%s%s %s", cursor, presetName, serviceCount)
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓: navigate • enter: apply preset • q/esc: back"))
+	helpShortcuts := []string{"↑/↓: navigate", "enter: apply preset", "q/esc: back"}
+	b.WriteString(HelpText(helpShortcuts))
 
 	return b.String()
 }

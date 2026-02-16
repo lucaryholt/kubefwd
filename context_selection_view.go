@@ -5,13 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-)
-
-var (
-	currentContextStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("42")).
-				Bold(true)
 )
 
 // ContextOption represents a context option in the selection list
@@ -101,23 +94,28 @@ func (m ContextSelectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m ContextSelectionModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("kubefwd - Select Cluster Context"))
+	b.WriteString(StyleH1.Render("Select Cluster Context"))
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("Current: %s\n\n", m.currentConfig.ClusterContext))
+	b.WriteString(InfoRow("Current", m.currentConfig.ClusterContext))
+	b.WriteString("\n\n")
+
+	b.WriteString(Divider(60))
+	b.WriteString("\n\n")
 
 	// Context list
 	for i, opt := range m.options {
 		cursor := "  "
 		if m.cursor == i {
-			cursor = cursorStyle.Render("▶ ")
+			cursor = StyleCursor.Render("▶ ")
 		}
 
 		var line string
 		if opt.IsCurrent {
-			line = fmt.Sprintf("%s%s %s", cursor, currentContextStyle.Render("●"), currentContextStyle.Render(opt.Name+" ("+opt.Context+")"))
+			badge := Badge("CURRENT", "success")
+			line = fmt.Sprintf("%s%s %s", cursor, badge, StyleHighlight.Render(opt.Name+" ("+opt.Context+")"))
 		} else {
-			line = fmt.Sprintf("%s  %s (%s)", cursor, opt.Name, opt.Context)
+			line = fmt.Sprintf("%s  %s", cursor, StyleBodyPrimary.Render(opt.Name+" ("+opt.Context+")"))
 		}
 
 		b.WriteString(line)
@@ -125,7 +123,8 @@ func (m ContextSelectionModel) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓: navigate • enter: select • q/esc: back"))
+	helpShortcuts := []string{"↑/↓: navigate", "enter: select", "q/esc: back"}
+	b.WriteString(HelpText(helpShortcuts))
 
 	return b.String()
 }

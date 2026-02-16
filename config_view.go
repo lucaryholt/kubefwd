@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // ConfigModel represents the state of the config management screen
@@ -70,39 +69,46 @@ func (m ConfigModel) View() string {
 	var b strings.Builder
 
 	// Title
-	b.WriteString(titleStyle.Render("Configuration Management"))
+	b.WriteString(StyleH1.Render("Configuration Management"))
 	b.WriteString("\n\n")
 
-	// Config file path
-	b.WriteString("Config file: ")
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(m.configPath))
-	b.WriteString("\n\n")
+	// Config file path in a card
+	cardContent := InfoRow("Config File", m.configPath)
+	configCard := Card("", cardContent, 60)
+	b.WriteString(configCard)
+	b.WriteString("\n")
 
 	// Status message if present
 	if m.message != "" {
-		messageStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-		b.WriteString(messageStyle.Render(m.message))
+		if strings.Contains(m.message, "Error") || strings.Contains(m.message, "error") {
+			b.WriteString(ErrorMessage(m.message, 60))
+		} else if strings.Contains(m.message, "success") {
+			b.WriteString(SuccessMessage(m.message))
+		} else {
+			b.WriteString(WarningMessage(m.message))
+		}
 		b.WriteString("\n\n")
 	}
 
 	// Available actions
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Actions:"))
-	b.WriteString("\n")
-	b.WriteString("  e - Open config file in editor\n")
-	b.WriteString("  r - Reload configuration from file\n")
-	b.WriteString("\n")
+	b.WriteString(StyleH3.Render("Actions"))
+	b.WriteString("\n\n")
+	
+	actions := []string{
+		"Edit config file",
+		"Reload configuration",
+	}
+	b.WriteString(List(actions))
+	b.WriteString("\n\n")
 
 	// Help
-	b.WriteString(helpStyle.Render("Press Esc or q to return to main view"))
+	helpShortcuts := []string{"e: edit", "r: reload", "esc/q: back"}
+	b.WriteString(HelpText(helpShortcuts))
 
-	// Center content
+	// Center content if dimensions available
 	content := b.String()
 	if m.width > 0 && m.height > 0 {
-		contentStyle := lipgloss.NewStyle().
-			Width(m.width).
-			Height(m.height).
-			Padding(2, 4)
-		return contentStyle.Render(content)
+		return CenterContent(content, m.width, m.height)
 	}
 
 	return content

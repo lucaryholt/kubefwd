@@ -4,23 +4,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-)
-
-var (
-	warningStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true)
-
-	inputStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("205"))
-
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
-	errorStyleConfirm = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
-			Bold(true)
 )
 
 // ConfirmationModel represents the confirmation screen state
@@ -77,26 +60,26 @@ func (m ConfirmationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m ConfirmationModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("kubefwd - ⚠️  Confirm Context Change"))
+	b.WriteString(StyleH1.Render("⚠️  Confirm Context Change"))
 	b.WriteString("\n\n")
 
-	b.WriteString(warningStyle.Render("WARNING: This will change the default cluster context andq will stop all running port forwards!"))
+	b.WriteString(WarningMessage("This will stop all running port forwards!"))
 	b.WriteString("\n\n")
 
 	b.WriteString("You are about to switch to:\n")
-	b.WriteString(inputStyle.Render("  → " + m.targetContextName + " (" + m.targetContext + ")"))
+	b.WriteString(StyleHighlight.Render("  → " + m.targetContextName + " (" + m.targetContext + ")"))
 	b.WriteString("\n\n")
 
 	b.WriteString("Type ")
-	b.WriteString(inputStyle.Render("cluster_change"))
+	b.WriteString(StyleHighlight.Render("cluster_change"))
 	b.WriteString(" to confirm:\n\n")
 
 	// Show input box
 	inputDisplay := m.input
 	if len(inputDisplay) == 0 {
-		inputDisplay = dimStyle.Render("(type here)")
+		inputDisplay = StyleDim.Render("(type here)")
 	} else {
-		inputDisplay = inputStyle.Render(inputDisplay)
+		inputDisplay = StyleHighlight.Render(inputDisplay)
 	}
 	b.WriteString("  > " + inputDisplay + "█")
 	b.WriteString("\n\n")
@@ -104,16 +87,17 @@ func (m ConfirmationModel) View() string {
 	// Show result or help
 	if m.input != "" && m.input != "cluster_change" {
 		if strings.HasPrefix("cluster_change", m.input) {
-			b.WriteString(dimStyle.Render("Keep typing..."))
+			b.WriteString(StyleDim.Render("Keep typing..."))
 		} else {
-			b.WriteString(errorStyleConfirm.Render("✗ Must type exactly: cluster_change"))
+			b.WriteString(ErrorMessage("✗ Must type exactly: cluster_change", 60))
 		}
 	} else if m.input == "cluster_change" {
-		b.WriteString(inputStyle.Render("✓ Press Enter to confirm"))
+		b.WriteString(SuccessMessage("✓ Press Enter to confirm"))
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("esc: cancel"))
+	helpShortcuts := []string{"esc: cancel"}
+	b.WriteString(HelpText(helpShortcuts))
 
 	return b.String()
 }
