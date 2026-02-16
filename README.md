@@ -271,14 +271,8 @@ kubefwd automatically detects port conflicts when launching and provides helpful
 **Resolving Conflicts:**
 1. Navigate to the service with the port conflict (shown with `⚠` indicator)
 2. Press `K` to kill the conflicting process
-3. All services are automatically re-scanned to update their conflict status
-4. The selected service will automatically attempt to start if its port is now available
-5. If the kill fails, an error message will be displayed
-
-**Smart Refresh:**
-- After killing a process, kubefwd automatically refreshes the port status for ALL services
-- This ensures that if multiple services were configured for the same port, they all update correctly
-- Services that were showing conflicts will clear automatically if their ports become available
+3. The service will automatically attempt to start after killing the process
+4. If the kill fails, an error message will be displayed
 
 **Example Error Messages:**
 - `Port already in use by kubectl port-forward (PID: 12345). Press 'K' to kill it.`
