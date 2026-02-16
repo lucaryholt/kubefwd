@@ -140,7 +140,6 @@ proxy_services:
   - **max_retries** (optional): Override the global max_retries setting for this specific service
   - **sql_tap_port** (optional): Port for sql-tap proxy (enables SQL traffic monitoring)
   - **sql_tap_driver** (optional): Database driver for sql-tap (`postgres` or `mysql`)
-  - **sql_tap_database_url** (optional): Database connection string for sql-tapd
   - **sql_tap_grpc_port** (optional): gRPC port for sql-tap TUI client (default: auto-assigned starting at 9091)
 - **proxy_pod_name** (optional): Name for the shared proxy pod (default: `kubefwd-proxy`)
 - **proxy_pod_image** (optional): Container image for proxy pod (default: `alpine/socat:latest`)
@@ -157,7 +156,6 @@ proxy_services:
   - **max_retries** (optional): Override the global max_retries setting for this specific proxy
   - **sql_tap_port** (optional): Port for sql-tap proxy (enables SQL traffic monitoring)
   - **sql_tap_driver** (optional): Database driver for sql-tap (`postgres` or `mysql`)
-  - **sql_tap_database_url** (optional): Database connection string for sql-tapd
   - **sql_tap_grpc_port** (optional): gRPC port for sql-tap TUI client (default: auto-assigned starting at 9091)
 
 ## Usage
@@ -429,7 +427,6 @@ services:
     # sql-tap configuration
     sql_tap_port: 5433                                                # Port where sql-tapd listens
     sql_tap_driver: postgres                                          # Driver: postgres or mysql
-    sql_tap_database_url: "postgres://user:pass@localhost:5432/mydb?sslmode=disable"  # Connection string
 
 proxy_services:
   - name: CloudSQL Production
@@ -440,19 +437,17 @@ proxy_services:
     # sql-tap configuration for proxy services
     sql_tap_port: 5433
     sql_tap_driver: postgres
-    sql_tap_database_url: "postgres://produser:prodpass@localhost:5432/proddb?sslmode=disable"
 ```
 
 **Configuration fields:**
 - `sql_tap_port`: The port where sql-tapd listens (your application connects here)
 - `sql_tap_driver`: Database driver type (`postgres` or `mysql`)
-- `sql_tap_database_url`: Full database connection string used by sql-tapd
 - `sql_tap_grpc_port` (optional): gRPC port for TUI client (default: auto-assigned starting at 9091)
 
 **Important notes:**
 - `sql_tap_port` must be different from `local_port`
-- All three required fields must be present when sql-tap is enabled
-- The `sql_tap_database_url` should point to `localhost:<local_port>` (the actual port-forward)
+- Both `sql_tap_port` and `sql_tap_driver` are required when sql-tap is enabled
+- DATABASE_URL is automatically composed as `postgresql://127.0.0.1:<local_port>` (or `mysql://...` for MySQL)
 - `sql_tap_grpc_port` is optional and will be auto-assigned if not specified
 - Multiple services automatically get incremented gRPC ports (9091, 9092, 9093...)
 
@@ -581,7 +576,6 @@ services:
     local_port: 5432
     sql_tap_port: 5433
     sql_tap_driver: postgres
-    sql_tap_database_url: "postgres://devuser:devpass@localhost:5432/devdb?sslmode=disable"
 ```
 
 **MySQL CloudSQL via proxy:**
@@ -593,7 +587,6 @@ proxy_services:
     local_port: 3306
     sql_tap_port: 3307
     sql_tap_driver: mysql
-    sql_tap_database_url: "root:password@tcp(localhost:3306)/proddb"
 ```
 
 **Multiple databases with different sql-tap ports:**
@@ -605,7 +598,6 @@ services:
     local_port: 5432
     sql_tap_port: 5433  # First database
     sql_tap_driver: postgres
-    sql_tap_database_url: "postgres://user:pass@localhost:5432/users"
 
   - name: Orders DB
     service_name: orders-postgres
@@ -613,7 +605,6 @@ services:
     local_port: 5532
     sql_tap_port: 5533  # Second database (different ports)
     sql_tap_driver: postgres
-    sql_tap_database_url: "postgres://user:pass@localhost:5532/orders"
 ```
 
 ### Lifecycle Management

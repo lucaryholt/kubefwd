@@ -76,7 +76,6 @@ services:
     # When enabled, sql-tapd will run as a proxy between your app and the database
     # sql_tap_port: 5433                                           # Port for sql-tap proxy (your app connects here)
     # sql_tap_driver: postgres                                     # Database driver: postgres or mysql
-    # sql_tap_database_url: "postgres://user:pass@localhost:5432/mydb?sslmode=disable"  # Connection string for sql-tapd
     # sql_tap_grpc_port: 9091                                      # Optional: gRPC port for sql-tap client (default: auto-assigned starting at 9091)
 
   - name: Redis Cache
@@ -136,7 +135,6 @@ proxy_services:
     # Optional: Enable sql-tap for SQL traffic monitoring on proxy services
     # sql_tap_port: 5434
     # sql_tap_driver: postgres
-    # sql_tap_database_url: "postgres://user:pass@localhost:5433/stagingdb?sslmode=disable"
     # sql_tap_grpc_port: 9092  # Optional: Custom gRPC port (auto-assigned would be 9092 if another service uses 9091)
 
   # Example: Redis MemoryStore

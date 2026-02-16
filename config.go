@@ -48,7 +48,6 @@ type Service struct {
 	MaxRetries         *int   `yaml:"max_retries,omitempty"`         // Optional: override global max_retries
 	SqlTapPort         *int   `yaml:"sql_tap_port,omitempty"`        // Optional: port for sql-tap proxy
 	SqlTapDriver       string `yaml:"sql_tap_driver,omitempty"`      // Optional: driver (postgres or mysql)
-	SqlTapDatabaseUrl  string `yaml:"sql_tap_database_url,omitempty"` // Optional: DATABASE_URL for sql-tapd
 	SqlTapGrpcPort     *int   `yaml:"sql_tap_grpc_port,omitempty"`   // Optional: gRPC port for sql-tap client (default: auto-assigned)
 }
 
@@ -64,7 +63,6 @@ type ProxyService struct {
 	MaxRetries         *int   `yaml:"max_retries,omitempty"`         // Optional: override global max_retries
 	SqlTapPort         *int   `yaml:"sql_tap_port,omitempty"`        // Optional: port for sql-tap proxy
 	SqlTapDriver       string `yaml:"sql_tap_driver,omitempty"`      // Optional: driver (postgres or mysql)
-	SqlTapDatabaseUrl  string `yaml:"sql_tap_database_url,omitempty"` // Optional: DATABASE_URL for sql-tapd
 	SqlTapGrpcPort     *int   `yaml:"sql_tap_grpc_port,omitempty"`   // Optional: gRPC port for sql-tap client (default: auto-assigned)
 }
 
@@ -186,9 +184,6 @@ func LoadConfig(filepath string) (*Config, error) {
 			if svc.SqlTapDriver != "postgres" && svc.SqlTapDriver != "mysql" {
 				return nil, fmt.Errorf("service %d (%s): sql_tap_driver must be 'postgres' or 'mysql'", i, svc.Name)
 			}
-			if svc.SqlTapDatabaseUrl == "" {
-				return nil, fmt.Errorf("service %d (%s): sql_tap_database_url is required when sql_tap_port is set", i, svc.Name)
-			}
 		}
 		// Validate sql-tap gRPC port if specified
 		if svc.SqlTapGrpcPort != nil {
@@ -225,9 +220,6 @@ func LoadConfig(filepath string) (*Config, error) {
 			}
 			if pxSvc.SqlTapDriver != "postgres" && pxSvc.SqlTapDriver != "mysql" {
 				return nil, fmt.Errorf("proxy_service %d (%s): sql_tap_driver must be 'postgres' or 'mysql'", i, pxSvc.Name)
-			}
-			if pxSvc.SqlTapDatabaseUrl == "" {
-				return nil, fmt.Errorf("proxy_service %d (%s): sql_tap_database_url is required when sql_tap_port is set", i, pxSvc.Name)
 			}
 		}
 		// Validate sql-tap gRPC port if specified

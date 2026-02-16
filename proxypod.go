@@ -390,13 +390,12 @@ func NewProxyForward(proxyService ProxyService, podManager *ProxyPodManager, glo
 		sqlTapManager = NewSqlTapManager(
 			true,
 			proxyService.SqlTapDriver,
-			proxyService.SqlTapDatabaseUrl,
 			*proxyService.SqlTapPort,
 			proxyService.LocalPort,
 			grpcPort,
 		)
 	} else {
-		sqlTapManager = NewSqlTapManager(false, "", "", 0, 0, 0)
+		sqlTapManager = NewSqlTapManager(false, "", 0, 0, 0)
 	}
 
 	return &ProxyForward{

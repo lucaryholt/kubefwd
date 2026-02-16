@@ -14,7 +14,6 @@ import (
 type SqlTapManager struct {
 	enabled      bool
 	driver       string
-	databaseUrl  string
 	listenPort   int
 	upstreamPort int
 	grpcPort     int // gRPC port for TUI client connection
@@ -26,16 +25,25 @@ type SqlTapManager struct {
 }
 
 // NewSqlTapManager creates a new sql-tap manager instance
-func NewSqlTapManager(enabled bool, driver, databaseUrl string, listenPort, upstreamPort, grpcPort int) *SqlTapManager {
+func NewSqlTapManager(enabled bool, driver string, listenPort, upstreamPort, grpcPort int) *SqlTapManager {
 	return &SqlTapManager{
 		enabled:      enabled,
 		driver:       driver,
-		databaseUrl:  databaseUrl,
 		listenPort:   listenPort,
 		upstreamPort: upstreamPort,
 		grpcPort:     grpcPort,
 		status:       StatusStopped,
 	}
+}
+
+// composeDatabaseURL creates the DATABASE_URL from driver and upstream port
+func (stm *SqlTapManager) composeDatabaseURL() string {
+	// Map driver names to protocol names
+	protocol := stm.driver
+	if stm.driver == "postgres" {
+		protocol = "postgresql"
+	}
+	return fmt.Sprintf("%s://127.0.0.1:%d", protocol, stm.upstreamPort)
 }
 
 // Start initiates the sql-tapd process
@@ -59,10 +67,11 @@ func (stm *SqlTapManager) Start() error {
 	stm.cancel = cancel
 
 	// Build sql-tapd command
-	// Example: DATABASE_URL="postgres://user:pass@localhost:5432/db?sslmode=disable" sql-tapd --driver=postgres --listen=:5433 --upstream=localhost:5432 --grpc=:9091
+	// Example: DATABASE_URL="postgresql://127.0.0.1:5432" sql-tapd --driver=postgres --listen=:5433 --upstream=localhost:5432 --grpc=:9091
 	listenAddr := fmt.Sprintf(":%d", stm.listenPort)
 	upstreamAddr := fmt.Sprintf("localhost:%d", stm.upstreamPort)
 	grpcAddr := fmt.Sprintf(":%d", stm.grpcPort)
+	databaseUrl := stm.composeDatabaseURL()
 
 	args := []string{
 		fmt.Sprintf("--driver=%s", stm.driver),
@@ -71,10 +80,10 @@ func (stm *SqlTapManager) Start() error {
 		fmt.Sprintf("--grpc=%s", grpcAddr),
 	}
 
-	debugLog("Starting sql-tapd: DATABASE_URL=%s sql-tapd %s", stm.databaseUrl, strings.Join(args, " "))
+	debugLog("Starting sql-tapd: DATABASE_URL=%s sql-tapd %s", databaseUrl, strings.Join(args, " "))
 
 	stm.cmd = exec.CommandContext(ctx, "sql-tapd", args...)
-	stm.cmd.Env = append(os.Environ(), fmt.Sprintf("DATABASE_URL=%s", stm.databaseUrl))
+	stm.cmd.Env = append(os.Environ(), fmt.Sprintf("DATABASE_URL=%s", databaseUrl))
 
 	// Capture stderr for error messages
 	var stderr strings.Builder

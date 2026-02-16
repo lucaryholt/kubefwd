@@ -56,13 +56,12 @@ func NewPortForward(service Service, globalContext, globalNamespace string, glob
 		sqlTapManager = NewSqlTapManager(
 			true,
 			service.SqlTapDriver,
-			service.SqlTapDatabaseUrl,
 			*service.SqlTapPort,
 			service.LocalPort,
 			grpcPort,
 		)
 	} else {
-		sqlTapManager = NewSqlTapManager(false, "", "", 0, 0, 0)
+		sqlTapManager = NewSqlTapManager(false, "", 0, 0, 0)
 	}
 	
 	return &PortForward{
