@@ -399,3 +399,38 @@ func (pf *PortForward) ClearConflict() {
 	}
 }
 
+// RefreshConflictStatus re-checks the port and updates conflict information
+func (pf *PortForward) RefreshConflictStatus() {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	
+	// Don't check conflicts for running services
+	if pf.Status == StatusRunning || pf.Status == StatusStarting {
+		return
+	}
+	
+	// Re-detect port conflict
+	newInfo := DetectPortConflict(pf.Service.LocalPort)
+	pf.ConflictInfo = newInfo
+	
+	// Update status and error message based on new conflict info
+	if newInfo.HasConflict {
+		pf.Status = StatusError
+		if newInfo.IsKubectl {
+			pf.ErrorMessage = fmt.Sprintf("Port already in use by kubectl port-forward (PID: %d). Press 'K' to kill it.", 
+				newInfo.ProcessPID)
+		} else if newInfo.ProcessPID > 0 {
+			pf.ErrorMessage = fmt.Sprintf("Port already in use by PID %d. Press 'K' to kill it.", 
+				newInfo.ProcessPID)
+		} else {
+			pf.ErrorMessage = "Port already in use by another process"
+		}
+	} else {
+		// Port is now available, clear error if it was a port conflict error
+		if pf.Status == StatusError && strings.Contains(pf.ErrorMessage, "Port already in use") {
+			pf.Status = StatusStopped
+			pf.ErrorMessage = ""
+		}
+	}
+}
+

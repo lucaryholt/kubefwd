@@ -148,9 +148,18 @@ func (m ManagementModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			conflictInfo := pf.GetConflictInfo()
 			if conflictInfo.HasConflict && conflictInfo.ProcessPID > 0 {
 				if err := KillProcess(conflictInfo.ProcessPID); err == nil {
-					// Clear conflict and try to start again
-					pf.ClearConflict()
-					pf.Start()
+					// Give the OS a moment to release the port
+					time.Sleep(100 * time.Millisecond)
+					
+					// Refresh conflict status for all services to detect if the port is now free
+					for _, pf := range m.portForwards {
+						pf.RefreshConflictStatus()
+					}
+					
+					// Try to start the current service if its port is now available
+					if !m.portForwards[m.cursor].HasPortConflict() {
+						m.portForwards[m.cursor].Start()
+					}
 				} else {
 					// Update error message if kill failed
 					pf.mu.Lock()
