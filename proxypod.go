@@ -4,27 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 )
-
-func debugLog(format string, args ...interface{}) {
-	if debugMode {
-		// Also log to stderr for backwards compatibility
-		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
-		
-		// Write to debug log file
-		if f, err := os.OpenFile("/tmp/kubefwd-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-			defer f.Close()
-			log.SetOutput(f)
-			log.Printf("[DEBUG] "+format, args...)
-		}
-	}
-}
 
 // ProxyPodStatus represents the current state of the proxy pod
 type ProxyPodStatus string

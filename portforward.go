@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -110,10 +109,7 @@ func (pf *PortForward) Start() error {
 	// Store the command string for debugging
 	pf.CommandString = fmt.Sprintf("kubectl %s", strings.Join(args, " "))
 	
-	// Print the command for debugging if enabled
-	if debugMode {
-		fmt.Fprintf(os.Stderr, "[DEBUG] Executing: %s\n", pf.CommandString)
-	}
+	debugLog("Executing: %s", pf.CommandString)
 
 	pf.cmd = exec.CommandContext(ctx, "kubectl", args...)
 	
@@ -189,10 +185,7 @@ func (pf *PortForward) monitor(stderr *strings.Builder) {
 				pf.ErrorMessage += fmt.Sprintf("/%d)...", pf.maxRetries)
 			}
 			
-			if debugMode {
-				fmt.Fprintf(os.Stderr, "[DEBUG] %s: Retrying after %.0fs (attempt %d)\n", 
-					pf.Service.Name, backoffSeconds, pf.retryCount)
-			}
+			debugLog("%s: Retrying after %.0fs (attempt %d)", pf.Service.Name, backoffSeconds, pf.retryCount)
 			
 			pf.mu.Unlock()
 			

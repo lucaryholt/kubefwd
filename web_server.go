@@ -187,6 +187,8 @@ type stateJSON struct {
 	Presets          []Preset                `json:"presets"`
 	Contexts         []AlternativeContext    `json:"contexts"`
 	HasProxyServices bool                    `json:"has_proxy_services"`
+	DebugMode        bool                    `json:"debug_mode"`
+	DebugLines       []string                `json:"debug_lines"`
 }
 
 func (wa *WebApp) buildStateJSON() string {
@@ -265,6 +267,8 @@ func (wa *WebApp) buildStateJSON() string {
 		Presets:          wa.config.Presets,
 		Contexts:         wa.config.AlternativeContexts,
 		HasProxyServices: len(wa.config.ProxyServices) > 0,
+		DebugMode:        debugMode,
+		DebugLines:       getDebugLines(),
 	}
 
 	b, _ := json.Marshal(state)

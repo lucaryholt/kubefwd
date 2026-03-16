@@ -404,6 +404,103 @@
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── Debug drawer ── */
+  #debug-btn {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  #debug-btn:hover { color: var(--text); border-color: var(--muted); }
+  #debug-btn.active { display: none; }
+  #debug-btn .dbg-count {
+    background: var(--accent);
+    color: #000;
+    border-radius: 10px;
+    padding: 1px 6px;
+    font-size: 10px;
+    display: none;
+  }
+  #debug-btn.has-lines .dbg-count { display: inline; }
+
+  #debug-drawer {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 190;
+    background: #090d12;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    height: 260px;
+    transform: translateY(100%);
+    transition: transform .2s ease;
+  }
+  #debug-drawer.open { transform: translateY(0); }
+  #debug-drawer.dragging { transition: none; }
+
+  #dbg-resize {
+    flex-shrink: 0;
+    height: 5px;
+    cursor: ns-resize;
+    background: transparent;
+    border-bottom: 1px solid var(--border);
+  }
+  #dbg-resize:hover, #dbg-resize.dragging { background: var(--accent); border-color: var(--accent); }
+
+  .dbg-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--surface);
+  }
+  .dbg-header-title {
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 600;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    flex: 1;
+  }
+  .dbg-header button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .dbg-header button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+
+  #debug-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 14px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #7ee787;
+  }
+  #debug-log .dbg-line { white-space: pre-wrap; word-break: break-all; }
+  #debug-log .dbg-line:nth-child(odd) { color: #7ee787; }
+  #debug-log .dbg-line:nth-child(even) { color: #a8d8a8; }
+  #debug-log .dbg-empty { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -508,6 +605,22 @@
 
 <div id="toast-container"></div>
 
+<!-- Debug drawer -->
+<button id="debug-btn" onclick="toggleDebugDrawer()" title="Toggle debug log">
+  ⬛ Debug
+  <span class="dbg-count" id="dbg-count">0</span>
+</button>
+
+<div id="debug-drawer">
+  <div id="dbg-resize"></div>
+  <div class="dbg-header">
+    <span class="dbg-header-title">Debug Log</span>
+    <button onclick="clearDebugLog()">Clear</button>
+    <button onclick="toggleDebugDrawer()">✕</button>
+  </div>
+  <div id="debug-log"><span class="dbg-empty">No debug output yet.</span></div>
+</div>
+
 <!-- Confirm modal -->
 <div class="overlay" id="confirm-overlay">
   <div class="modal">
@@ -568,6 +681,13 @@ function initFromState() {
 
   renderPresets();
   renderContexts();
+
+  // Auto-open debug drawer when running with --debug flag
+  if (state.debug_mode && !debugDrawerOpen) {
+    debugDrawerOpen = true;
+    document.getElementById('debug-drawer').classList.add('open');
+    document.getElementById('debug-btn').classList.add('active');
+  }
 }
 
 // ── Render ────────────────────────────────────────────
@@ -582,6 +702,7 @@ function render() {
   renderServices();
   if (state.has_proxy_services) renderProxy();
   renderConfig();
+  renderDebugPanel(state.debug_lines);
 }
 
 // ── Services pane ─────────────────────────────────────
@@ -953,6 +1074,93 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+
+// ── Debug drawer ───────────────────────────────────────
+let debugDrawerOpen = false;
+let debugLineCount = 0;
+let clearedUpTo = 0; // index into debug_lines array to start rendering from
+
+const DBG_MIN_HEIGHT = 100;
+const DBG_MAX_HEIGHT = window.innerHeight * 0.85;
+
+function toggleDebugDrawer() {
+  debugDrawerOpen = !debugDrawerOpen;
+  const drawer = document.getElementById('debug-drawer');
+  const btn = document.getElementById('debug-btn');
+  drawer.classList.toggle('open', debugDrawerOpen);
+  btn.classList.toggle('active', debugDrawerOpen);
+  if (debugDrawerOpen) renderDebugPanel(state ? (state.debug_lines || []) : []);
+}
+
+function clearDebugLog() {
+  clearedUpTo = state ? (state.debug_lines || []).length : 0;
+  debugLineCount = 0;
+  document.getElementById('debug-log').innerHTML = '<span class="dbg-empty">Log cleared.</span>';
+  document.getElementById('dbg-count').textContent = '0';
+  document.getElementById('debug-btn').classList.remove('has-lines');
+}
+
+function renderDebugPanel(lines) {
+  lines = lines || [];
+  const visible = lines.slice(clearedUpTo);
+  const newCount = visible.length;
+
+  const btn = document.getElementById('debug-btn');
+  const countEl = document.getElementById('dbg-count');
+
+  if (newCount !== debugLineCount) {
+    debugLineCount = newCount;
+    countEl.textContent = newCount;
+    btn.classList.toggle('has-lines', newCount > 0);
+  }
+
+  if (!debugDrawerOpen) return;
+
+  const log = document.getElementById('debug-log');
+  // Check if user is scrolled to bottom before we update
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 4;
+
+  if (!visible.length) {
+    log.innerHTML = '<span class="dbg-empty">No debug output yet.</span>';
+    return;
+  }
+
+  log.innerHTML = visible.map(l => `<div class="dbg-line">${esc(l)}</div>`).join('');
+
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+// ── Debug drawer resize ────────────────────────────────
+(function() {
+  const handle = document.getElementById('dbg-resize');
+  const drawer = document.getElementById('debug-drawer');
+  let dragStartY = 0;
+  let dragStartHeight = 0;
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragStartY = e.clientY;
+    dragStartHeight = drawer.offsetHeight;
+    handle.classList.add('dragging');
+    drawer.classList.add('dragging');
+
+    function onMove(e) {
+      const delta = dragStartY - e.clientY;
+      const newH = Math.min(Math.max(dragStartHeight + delta, DBG_MIN_HEIGHT), window.innerHeight * 0.85);
+      drawer.style.height = newH + 'px';
+    }
+
+    function onUp() {
+      handle.classList.remove('dragging');
+      drawer.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+})();
 </script>
 </body>
 </html>
