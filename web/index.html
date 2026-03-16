@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kubefwd</title>
+<style>
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --border:   #30363d;
+    --text:     #e6edf3;
+    --muted:    #8b949e;
+    --accent:   #58a6ff;
+    --green:    #3fb950;
+    --amber:    #d29922;
+    --red:      #f85149;
+    --purple:   #bc8cff;
+    --running-bg: rgba(63,185,80,.1);
+    --error-bg:   rgba(248,81,73,.1);
+    --starting-bg: rgba(210,153,34,.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .logo { font-size: 15px; font-weight: 700; color: var(--accent); letter-spacing: .5px; }
+  .cluster-badge {
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(88,166,255,.08);
+    border: 1px solid rgba(88,166,255,.25);
+    border-radius: 6px; padding: 3px 10px;
+    font-size: 12px; color: var(--accent);
+  }
+  .ns-badge {
+    font-size: 11px; color: var(--muted);
+    background: rgba(255,255,255,.04);
+    border: 1px solid var(--border);
+    border-radius: 4px; padding: 2px 8px;
+  }
+  .conn-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); margin-left: auto;
+    box-shadow: 0 0 6px var(--green);
+    transition: background .3s;
+  }
+  .conn-dot.off { background: var(--red); box-shadow: 0 0 6px var(--red); }
+
+  /* ── Tabs ── */
+  nav {
+    display: flex; gap: 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+    flex-shrink: 0;
+  }
+  .tab {
+    padding: 8px 16px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-size: 12px;
+    font-family: inherit;
+    background: none;
+    border-top: none; border-left: none; border-right: none;
+    transition: color .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── Content ── */
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+  }
+  .pane { display: none; }
+  .pane.active { display: block; }
+
+  /* ── Toolbar ── */
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .toolbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+  /* ── Buttons ── */
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    padding: 5px 12px;
+    background: var(--surface);
+    color: var(--text);
+    transition: background .15s, border-color .15s, opacity .15s;
+    white-space: nowrap;
+  }
+  button:hover { background: #21262d; border-color: #8b949e; }
+  button:active { opacity: .7; }
+  button.primary {
+    background: rgba(88,166,255,.15);
+    border-color: rgba(88,166,255,.4);
+    color: var(--accent);
+  }
+  button.primary:hover { background: rgba(88,166,255,.25); }
+  button.danger {
+    background: rgba(248,81,73,.1);
+    border-color: rgba(248,81,73,.4);
+    color: var(--red);
+  }
+  button.danger:hover { background: rgba(248,81,73,.2); }
+  button.success {
+    background: rgba(63,185,80,.1);
+    border-color: rgba(63,185,80,.4);
+    color: var(--green);
+  }
+  button.success:hover { background: rgba(63,185,80,.2); }
+  button.amber {
+    background: rgba(210,153,34,.1);
+    border-color: rgba(210,153,34,.4);
+    color: var(--amber);
+  }
+  button.amber:hover { background: rgba(210,153,34,.2); }
+  button.icon {
+    padding: 2px 7px;
+    font-size: 11px;
+    border-radius: 4px;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+
+  /* ── Service list ── */
+  .service-list { display: flex; flex-direction: column; gap: 2px; }
+  .service-row {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    transition: background .1s, border-color .1s;
+    cursor: pointer;
+    user-select: none;
+  }
+  .service-row:hover { background: rgba(255,255,255,.04); border-color: var(--border); }
+  .service-row.running { background: var(--running-bg); }
+  .service-row.error   { background: var(--error-bg); }
+  .service-row.starting { background: var(--starting-bg); }
+
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted); flex-shrink: 0;
+    transition: background .3s, box-shadow .3s;
+  }
+  .status-dot.running { background: var(--green); box-shadow: 0 0 5px var(--green); }
+  .status-dot.starting { background: var(--amber); animation: pulse 1s infinite; }
+  .status-dot.error { background: var(--red); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .3; }
+  }
+
+  .svc-info { min-width: 0; }
+  .svc-name {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .svc-name-text {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .svc-meta {
+    font-size: 11px;
+    color: var(--muted);
+    display: flex; gap: 6px; align-items: center;
+    flex-wrap: wrap;
+    margin-top: 1px;
+  }
+  .port-tag {
+    font-size: 11px;
+    background: rgba(255,255,255,.06);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    color: var(--muted);
+    font-family: inherit;
+  }
+  .port-tag.local { color: var(--accent); border-color: rgba(88,166,255,.3); background: rgba(88,166,255,.06); }
+  .badge-default {
+    font-size: 10px; background: rgba(188,140,255,.1);
+    border: 1px solid rgba(188,140,255,.3); color: var(--purple);
+    border-radius: 3px; padding: 0 5px;
+  }
+  .badge-sqltap {
+    font-size: 10px; background: rgba(210,153,34,.1);
+    border: 1px solid rgba(210,153,34,.3); color: var(--amber);
+    border-radius: 3px; padding: 0 5px;
+  }
+  .svc-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+  .svc-error {
+    font-size: 11px; color: var(--red);
+    grid-column: 2 / -1;
+    margin-top: -2px;
+    opacity: .85;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ── Proxy section ── */
+  .proxy-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .proxy-card-header {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 12px;
+  }
+  .proxy-card-header h3 {
+    font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px;
+    margin: 0;
+  }
+  .proxy-card-actions { margin-left: auto; display: flex; gap: 6px; }
+  .pod-status {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; margin-bottom: 14px; color: var(--muted);
+  }
+  .proxy-list { display: flex; flex-direction: column; gap: 4px; }
+  .proxy-row {
+    border: 1px solid transparent;
+    border-radius: 5px;
+    transition: background .1s;
+  }
+  .proxy-row:hover { background: rgba(255,255,255,.04); border-color: var(--border); }
+  .proxy-row-main {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 10px;
+    cursor: pointer;
+  }
+  .proxy-row input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent); flex-shrink: 0; }
+  .proxy-name { font-weight: 500; }
+  .proxy-port { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .pending-banner {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3);
+    border-radius: 6px; padding: 8px 14px;
+    margin-top: 12px; font-size: 12px; color: var(--amber);
+  }
+
+  /* ── SQL-tap info panel ── */
+  .sqltap-info {
+    margin: 0 10px 6px 34px;
+    background: rgba(210,153,34,.06);
+    border: 1px solid rgba(210,153,34,.2);
+    border-radius: 5px;
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+  .sqltap-info-row { display: flex; gap: 8px; margin-bottom: 3px; color: var(--muted); }
+  .sqltap-info-row:last-child { margin-bottom: 0; }
+  .sqltap-info-key { width: 90px; flex-shrink: 0; }
+  .sqltap-info-val { color: var(--text); }
+  .sqltap-cmd {
+    margin-top: 6px;
+    background: rgba(0,0,0,.3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: text;
+    user-select: all;
+  }
+
+  /* ── Port checker ── */
+  .port-table { width: 100%; border-collapse: collapse; }
+  .port-table th {
+    text-align: left; font-size: 11px; color: var(--muted);
+    padding: 6px 12px; border-bottom: 1px solid var(--border);
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .port-table td { padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,.5); }
+  .port-table tr:last-child td { border-bottom: none; }
+  .port-table tr:hover td { background: rgba(255,255,255,.02); }
+
+  /* ── Presets ── */
+  .preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .preset-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .preset-card:hover { border-color: var(--accent); background: rgba(88,166,255,.05); }
+  .preset-card h3 { font-size: 13px; margin-bottom: 8px; color: var(--text); }
+  .preset-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .preset-tag {
+    font-size: 10px; background: rgba(255,255,255,.06);
+    border: 1px solid var(--border); border-radius: 3px;
+    padding: 1px 6px; color: var(--muted);
+  }
+
+  /* ── Contexts ── */
+  .context-list { display: flex; flex-direction: column; gap: 6px; max-width: 500px; }
+  .context-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface);
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .context-row:hover { border-color: var(--accent); background: rgba(88,166,255,.05); }
+  .context-row.current { border-color: var(--green); background: rgba(63,185,80,.07); cursor: default; }
+  .context-row .ctx-name { font-weight: 600; }
+  .context-row .ctx-ctx { font-size: 11px; color: var(--muted); }
+  .current-badge {
+    margin-left: auto; font-size: 10px;
+    background: rgba(63,185,80,.1); border: 1px solid rgba(63,185,80,.3);
+    color: var(--green); border-radius: 3px; padding: 1px 6px;
+  }
+
+  /* ── Config pane ── */
+  .config-info {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; max-width: 620px;
+  }
+  .config-row { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(48,54,61,.5); font-size: 12px; }
+  .config-row:last-child { border-bottom: none; }
+  .config-key { color: var(--muted); width: 180px; flex-shrink: 0; }
+  .config-val { color: var(--text); word-break: break-all; }
+
+  /* ── Section header ── */
+  .section-header {
+    font-size: 11px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px;
+    margin-bottom: 10px;
+  }
+
+  /* ── Toast ── */
+  #toast-container {
+    position: fixed; bottom: 20px; right: 20px;
+    display: flex; flex-direction: column; gap: 6px;
+    z-index: 9999; pointer-events: none;
+  }
+  .toast {
+    padding: 8px 14px;
+    border-radius: 6px; font-size: 12px;
+    animation: slideIn .2s ease;
+    pointer-events: none;
+  }
+  .toast.ok { background: rgba(63,185,80,.15); border: 1px solid rgba(63,185,80,.4); color: var(--green); }
+  .toast.err { background: rgba(248,81,73,.15); border: 1px solid rgba(248,81,73,.4); color: var(--red); }
+  @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* ── Empty state ── */
+  .empty { color: var(--muted); font-size: 12px; padding: 20px 0; text-align: center; }
+
+  /* ── Confirm overlay ── */
+  .overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.6); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 24px 28px;
+    min-width: 340px; max-width: 480px;
+  }
+  .modal h3 { margin-bottom: 10px; font-size: 15px; }
+  .modal p { color: var(--muted); font-size: 12px; margin-bottom: 16px; line-height: 1.6; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="logo">⎈ kubefwd</span>
+    <span class="cluster-badge" id="cluster-badge">—</span>
+    <span class="ns-badge" id="ns-badge">—</span>
+    <span class="conn-dot off" id="conn-dot" title="SSE connection"></span>
+  </header>
+
+  <nav id="nav">
+    <button class="tab active" data-pane="services">Services</button>
+    <button class="tab" data-pane="proxy" id="tab-proxy" style="display:none">Proxy</button>
+    <button class="tab" data-pane="ports">Port Checker</button>
+    <button class="tab" data-pane="presets" id="tab-presets" style="display:none">Presets</button>
+    <button class="tab" data-pane="contexts" id="tab-contexts" style="display:none">Contexts</button>
+    <button class="tab" data-pane="config">Config</button>
+  </nav>
+
+  <main>
+    <!-- Services -->
+    <div class="pane active" id="pane-services">
+      <div class="toolbar">
+        <button class="success" onclick="api('POST','/api/services/start-defaults')">▶ Start Defaults</button>
+        <button class="primary" onclick="api('POST','/api/services/start-all')">▶ Start All</button>
+        <button class="danger" onclick="api('POST','/api/services/stop-all')">■ Stop All</button>
+        <span class="toolbar-right">
+          <span id="running-count" style="font-size:11px;color:var(--muted)"></span>
+        </span>
+      </div>
+      <div class="service-list" id="service-list">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Proxy -->
+    <div class="pane" id="pane-proxy">
+      <div class="proxy-card">
+        <div class="proxy-card-header">
+          <h3>Proxy Pod</h3>
+          <div class="proxy-card-actions">
+            <button class="amber" onclick="selectDefaultProxies()">★ Select Defaults</button>
+            <button class="danger" onclick="confirmResetPod()">↺ Reset Pod</button>
+          </div>
+        </div>
+        <div class="pod-status" id="pod-status">
+          <span class="status-dot" id="pod-dot"></span>
+          <span id="pod-status-text">—</span>
+        </div>
+        <div class="proxy-list" id="proxy-list"></div>
+        <div class="pending-banner" id="pending-banner" style="display:none">
+          <span>⚠ Pending changes</span>
+          <button style="margin-left:auto" onclick="applyProxy()">Apply</button>
+          <button onclick="discardProxy()">Discard</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Port Checker -->
+    <div class="pane" id="pane-ports">
+      <div class="toolbar">
+        <button onclick="loadPorts()">↻ Refresh</button>
+      </div>
+      <table class="port-table">
+        <thead>
+          <tr>
+            <th>Port</th><th>Service</th><th>Type</th><th>Status</th><th>Process</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="port-tbody">
+          <tr><td colspan="6" class="empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Presets -->
+    <div class="pane" id="pane-presets">
+      <div class="section-header" style="margin-bottom:14px">Click a preset to stop all running services and start only those in the preset.</div>
+      <div class="preset-grid" id="preset-grid">
+        <div class="empty">No presets configured.</div>
+      </div>
+    </div>
+
+    <!-- Contexts -->
+    <div class="pane" id="pane-contexts">
+      <div class="section-header" style="margin-bottom:14px">Switch the active Kubernetes context. All running services will be restarted.</div>
+      <div class="context-list" id="context-list">
+        <div class="empty">No alternative contexts configured.</div>
+      </div>
+    </div>
+
+    <!-- Config -->
+    <div class="pane" id="pane-config">
+      <div class="toolbar" style="margin-bottom:16px">
+        <button onclick="reloadConfig()">↻ Reload Config</button>
+      </div>
+      <div class="config-info" id="config-info"></div>
+    </div>
+  </main>
+</div>
+
+<div id="toast-container"></div>
+
+<!-- Confirm modal -->
+<div class="overlay" id="confirm-overlay">
+  <div class="modal">
+    <h3 id="confirm-title">Confirm</h3>
+    <p id="confirm-msg"></p>
+    <div class="modal-actions">
+      <button onclick="confirmCancel()">Cancel</button>
+      <button class="danger" id="confirm-ok-btn" onclick="confirmOK()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────
+let state = null;
+let lastStateJSON = '';
+
+// pending proxy selection: map of name -> bool; null = in sync with server
+let pendingProxy = null;
+
+// expanded sql-tap info panels on proxy page: set of service names
+let expandedSqlTap = new Set();
+
+// ── SSE ───────────────────────────────────────────────
+const connDot = document.getElementById('conn-dot');
+
+function connectSSE() {
+  const es = new EventSource('/api/state');
+  es.onopen = () => { connDot.classList.remove('off'); };
+  es.onmessage = (e) => {
+    // Skip re-render if nothing changed
+    if (e.data === lastStateJSON && state !== null) return;
+    lastStateJSON = e.data;
+
+    const newState = JSON.parse(e.data);
+    const firstLoad = state === null;
+    state = newState;
+    if (firstLoad) initFromState();
+    render();
+  };
+  es.onerror = () => {
+    connDot.classList.add('off');
+    es.close();
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+connectSSE();
+
+// ── Init once ─────────────────────────────────────────
+function initFromState() {
+  document.getElementById('tab-proxy').style.display =
+    state.has_proxy_services ? '' : 'none';
+  document.getElementById('tab-presets').style.display =
+    (state.presets && state.presets.length) ? '' : 'none';
+  document.getElementById('tab-contexts').style.display =
+    (state.contexts && state.contexts.length) ? '' : 'none';
+
+  renderPresets();
+  renderContexts();
+}
+
+// ── Render ────────────────────────────────────────────
+function render() {
+  if (!state) return;
+
+  const name = state.cluster_name || state.cluster_context;
+  document.getElementById('cluster-badge').textContent = '⎈ ' + name;
+  document.getElementById('ns-badge').textContent = state.namespace;
+
+  renderContexts();
+  renderServices();
+  if (state.has_proxy_services) renderProxy();
+  renderConfig();
+}
+
+// ── Services pane ─────────────────────────────────────
+function renderServices() {
+  const list = document.getElementById('service-list');
+  const svcs = state.services || [];
+  if (!svcs.length) { list.innerHTML = '<div class="empty">No services configured.</div>'; return; }
+
+  let running = 0;
+  svcs.forEach(s => { if (s.status === 'running') running++; });
+  document.getElementById('running-count').textContent =
+    running + ' / ' + svcs.length + ' running';
+
+  list.innerHTML = svcs.map(s => serviceRow(s)).join('');
+}
+
+function serviceRow(s) {
+  const dotClass = s.status === 'running' ? 'running' :
+                   s.status === 'starting' || s.retrying ? 'starting' :
+                   s.status === 'error' ? 'error' : '';
+  const rowClass = dotClass;
+
+  const retryInfo = s.retrying
+    ? `<span style="color:var(--amber);font-size:11px">↻ ${s.retry_attempt}/${s.max_retries < 0 ? '∞' : s.max_retries}</span>`
+    : '';
+
+  const defaultBadge = s.is_default ? '<span class="badge-default">default</span>' : '';
+  const sqltapBadge = s.has_sql_tap
+    ? `<span class="badge-sqltap">sql-tap :${s.sql_tap_port}</span>` : '';
+
+  const isRunning = s.status === 'running' || s.status === 'starting';
+
+  // Stop-propagation keeps button click from also firing the row toggle
+  const stopBtn = isRunning
+    ? `<button class="danger" onclick="event.stopPropagation();svcStop('${esc(s.name)}')">■ Stop</button>`
+    : `<button class="success" onclick="event.stopPropagation();svcStart('${esc(s.name)}')">▶ Start</button>`;
+
+  const sqlTapBtn = s.has_sql_tap && s.status === 'running'
+    ? `<button class="icon" onclick="event.stopPropagation();launchSqlTap('${esc(s.name)}')">sql-tap</button>` : '';
+
+  const errorLine = s.error
+    ? `<div class="svc-error" title="${esc(s.error)}">✗ ${esc(s.error)}</div>` : '';
+
+  return `
+    <div class="service-row ${rowClass}" onclick="svcToggle('${esc(s.name)}', ${isRunning})">
+      <span class="status-dot ${dotClass}"></span>
+      <div class="svc-info">
+        <div class="svc-name">
+          <span class="svc-name-text">${esc(s.name)}</span>
+          ${defaultBadge}${sqltapBadge}${retryInfo}
+        </div>
+        <div class="svc-meta">
+          <span class="port-tag local">:${s.local_port}</span>
+          <span style="color:var(--border)">→</span>
+          <span class="port-tag">:${s.remote_port}</span>
+        </div>
+      </div>
+      <div class="svc-actions">
+        ${sqlTapBtn}
+        ${stopBtn}
+      </div>
+      ${errorLine}
+    </div>`;
+}
+
+function svcToggle(name, isRunning) {
+  if (isRunning) svcStop(name); else svcStart(name);
+}
+function svcStart(name) {
+  api('POST', '/api/services/' + encodeURIComponent(name) + '/start');
+}
+function svcStop(name) {
+  api('POST', '/api/services/' + encodeURIComponent(name) + '/stop');
+}
+function launchSqlTap(name) {
+  api('POST', '/api/sqltap/' + encodeURIComponent(name) + '/launch',
+    null, 'sql-tap launched in new terminal');
+}
+
+// ── Proxy pane ────────────────────────────────────────
+function renderProxy() {
+  const ps = state.proxy_services || [];
+
+  // Pod status indicator
+  const dot = document.getElementById('pod-dot');
+  const txt = document.getElementById('pod-status-text');
+  const podSt = state.proxy_pod_status;
+  dot.className = 'status-dot ' +
+    (podSt === 'ready' ? 'running' :
+     podSt === 'creating' ? 'starting' :
+     podSt === 'error' ? 'error' : '');
+  txt.textContent = podSt.replace(/_/g, ' ');
+  if (state.proxy_pod_error) txt.textContent += ': ' + state.proxy_pod_error;
+
+  // Sync pendingProxy from server state when it hasn't diverged yet
+  if (pendingProxy === null) {
+    pendingProxy = {};
+    ps.forEach(p => { pendingProxy[p.name] = p.active; });
+  }
+
+  const list = document.getElementById('proxy-list');
+  list.innerHTML = ps.map(p => {
+    const checked = pendingProxy[p.name] ? 'checked' : '';
+    const statusDot = p.active
+      ? `<span class="status-dot ${p.status === 'running' ? 'running' : p.status === 'starting' ? 'starting' : ''}" style="width:6px;height:6px;flex-shrink:0"></span>`
+      : '<span class="status-dot" style="width:6px;height:6px;flex-shrink:0"></span>';
+
+    const sqltapInfoBtn = p.has_sql_tap
+      ? `<button class="icon amber" onclick="event.stopPropagation();toggleSqlTapInfo('${esc(p.name)}')" title="SQL-tap info">ℹ sql-tap</button>`
+      : '';
+
+    const expanded = expandedSqlTap.has(p.name);
+    const infoPanel = (p.has_sql_tap && expanded) ? `
+      <div class="sqltap-info">
+        <div class="sqltap-info-row"><span class="sqltap-info-key">Listen port</span><span class="sqltap-info-val">:${p.sql_tap_port}</span></div>
+        <div class="sqltap-info-row"><span class="sqltap-info-key">Upstream port</span><span class="sqltap-info-val">:${p.local_port}</span></div>
+        <div class="sqltap-info-row"><span class="sqltap-info-key">gRPC port</span><span class="sqltap-info-val">:${p.sql_tap_grpc_port}</span></div>
+        <div class="sqltap-cmd">sql-tap localhost:${p.sql_tap_grpc_port}</div>
+      </div>` : '';
+
+    return `<div class="proxy-row">
+      <label class="proxy-row-main" onclick="proxyRowClick(event, '${esc(p.name)}')">
+        <input type="checkbox" ${checked} onchange="proxyToggle('${esc(p.name)}', this.checked)" onclick="event.stopPropagation()">
+        ${statusDot}
+        <span class="proxy-name">${esc(p.name)}</span>
+        <span class="proxy-port">:${p.local_port}</span>
+        ${sqltapInfoBtn}
+      </label>
+      ${infoPanel}
+    </div>`;
+  }).join('');
+
+  updatePendingBanner();
+}
+
+function proxyRowClick(event, name) {
+  // Only toggle checkbox if click wasn't on a button or the checkbox itself
+  if (event.target.tagName === 'BUTTON' || event.target.tagName === 'INPUT') return;
+  const checkbox = event.currentTarget.querySelector('input[type=checkbox]');
+  if (checkbox) {
+    checkbox.checked = !checkbox.checked;
+    proxyToggle(name, checkbox.checked);
+  }
+}
+
+function toggleSqlTapInfo(name) {
+  if (expandedSqlTap.has(name)) {
+    expandedSqlTap.delete(name);
+  } else {
+    expandedSqlTap.add(name);
+  }
+  renderProxy();
+}
+
+function selectDefaultProxies() {
+  if (!pendingProxy) pendingProxy = {};
+  (state.proxy_services || []).forEach(p => {
+    pendingProxy[p.name] = p.is_default;
+  });
+  renderProxy();
+}
+
+function confirmResetPod() {
+  confirm2('Reset Proxy Pod?',
+    'All active proxy forwards and their sql-tap instances will be stopped, the pod deleted, then recreated with the same selection.',
+    () => api('POST', '/api/proxy-services/reset', null, 'Proxy pod is resetting…'));
+}
+
+function proxyToggle(name, checked) {
+  if (pendingProxy === null) pendingProxy = {};
+  pendingProxy[name] = checked;
+  updatePendingBanner();
+}
+
+function updatePendingBanner() {
+  const ps = state.proxy_services || [];
+  let diverged = false;
+  ps.forEach(p => {
+    if ((pendingProxy[p.name] || false) !== p.active) diverged = true;
+  });
+  document.getElementById('pending-banner').style.display = diverged ? 'flex' : 'none';
+}
+
+function applyProxy() {
+  const names = Object.entries(pendingProxy)
+    .filter(([, v]) => v).map(([k]) => k);
+  api('POST', '/api/proxy-services/apply', { names });
+  pendingProxy = null;
+}
+
+function discardProxy() {
+  pendingProxy = null;
+  renderProxy();
+}
+
+// ── Port Checker pane ─────────────────────────────────
+async function loadPorts() {
+  const tbody = document.getElementById('port-tbody');
+  tbody.innerHTML = '<tr><td colspan="6" class="empty">Loading…</td></tr>';
+  try {
+    const res = await fetch('/api/ports');
+    const ports = await res.json();
+    if (!ports.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No configured ports.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = ports.map(p => {
+      const statusColor = p.status === 'free' ? 'var(--green)' :
+                          p.status === 'kubefwd' ? 'var(--accent)' : 'var(--amber)';
+      const killBtn = p.in_use && p.pid && p.status !== 'kubefwd'
+        ? `<button class="danger" onclick="killPort(${p.port})">Kill</button>` : '';
+      return `<tr>
+        <td><span class="port-tag local">:${p.port}</span></td>
+        <td>${esc(p.service_name)}</td>
+        <td>${esc(p.type)}</td>
+        <td style="color:${statusColor}">${p.status}</td>
+        <td style="font-size:11px;color:var(--muted)">${p.in_use ? esc(p.process || 'PID ' + p.pid) : '—'}</td>
+        <td>${killBtn}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty" style="color:var(--red)">Error: ${esc(String(e))}</td></tr>`;
+  }
+}
+
+function killPort(port) {
+  confirm2('Kill process on :' + port + '?',
+    'This will send SIGTERM to the process listening on port ' + port + '. This cannot be undone.',
+    () => api('POST', '/api/ports/' + port + '/kill', null, 'Process killed', loadPorts));
+}
+
+// ── Presets pane ──────────────────────────────────────
+function renderPresets() {
+  const grid = document.getElementById('preset-grid');
+  const presets = state ? (state.presets || []) : [];
+  if (!presets.length) { grid.innerHTML = '<div class="empty">No presets configured.</div>'; return; }
+  grid.innerHTML = presets.map(p => `
+    <div class="preset-card" onclick="applyPreset('${esc(p.Name)}')">
+      <h3>${esc(p.Name)}</h3>
+      <div class="preset-tags">
+        ${(p.Services || []).map(s => `<span class="preset-tag">${esc(s)}</span>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+function applyPreset(name) {
+  confirm2('Apply preset "' + name + '"?',
+    'All running services will be stopped and only the preset services will be started.',
+    () => api('POST', '/api/presets/' + encodeURIComponent(name) + '/apply',
+      null, 'Preset applied'));
+}
+
+// ── Contexts pane ─────────────────────────────────────
+function renderContexts() {
+  const list = document.getElementById('context-list');
+  const ctxs = state ? (state.contexts || []) : [];
+  if (!ctxs.length) { list.innerHTML = '<div class="empty">No alternative contexts configured.</div>'; return; }
+  const current = state ? state.cluster_context : '';
+  list.innerHTML = ctxs.map(c => {
+    const isCurrent = c.Context === current;
+    return `<div class="context-row ${isCurrent ? 'current' : ''}"
+      ${isCurrent ? '' : `onclick="switchContext('${esc(c.Context)}','${esc(c.Name)}')" `}>
+      <div>
+        <div class="ctx-name">${esc(c.Name)}</div>
+        <div class="ctx-ctx">${esc(c.Context)}</div>
+      </div>
+      ${isCurrent ? '<span class="current-badge">active</span>' : '<button class="primary">Switch</button>'}
+    </div>`;
+  }).join('');
+}
+
+function switchContext(ctx, name) {
+  confirm2('Switch to "' + name + '"?',
+    'All running services will be stopped and the context will switch to: ' + ctx,
+    () => api('POST', '/api/contexts/switch', { context: ctx }, 'Context switched to ' + name));
+}
+
+// ── Config pane ───────────────────────────────────────
+function renderConfig() {
+  if (!state) return;
+  const box = document.getElementById('config-info');
+  const rows = [
+    ['config_file',         state.config_file || '—'],
+    ['cluster_context',     state.cluster_context],
+    ['cluster_name',        state.cluster_name || '—'],
+    ['namespace',           state.namespace],
+    ['services',            (state.services || []).length + ' defined'],
+    ['proxy_services',      (state.proxy_services || []).length + ' defined'],
+    ['presets',             (state.presets || []).length + ' defined'],
+    ['alternative_contexts',(state.contexts || []).length + ' defined'],
+  ];
+  box.innerHTML = rows.map(([k, v]) =>
+    `<div class="config-row"><span class="config-key">${k}</span><span class="config-val">${esc(String(v))}</span></div>`
+  ).join('');
+}
+
+async function reloadConfig() {
+  await api('POST', '/api/config/reload', null, 'Config reloaded');
+}
+
+// ── Tab navigation ────────────────────────────────────
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const pane = btn.dataset.pane;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('pane-' + pane).classList.add('active');
+    if (pane === 'ports') loadPorts();
+    if (pane === 'presets') renderPresets();
+    if (pane === 'contexts') renderContexts();
+  });
+});
+
+// ── API helper ────────────────────────────────────────
+async function api(method, url, body, successMsg, onSuccess) {
+  try {
+    const opts = { method, headers: {} };
+    if (body) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(url, opts);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || 'Request failed (' + res.status + ')', 'err');
+      return;
+    }
+    if (successMsg) toast(successMsg, 'ok');
+    if (onSuccess) onSuccess();
+  } catch(e) {
+    toast('Network error: ' + e.message, 'err');
+  }
+}
+
+// ── Toast ─────────────────────────────────────────────
+function toast(msg, type = 'ok') {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ── Confirm modal ─────────────────────────────────────
+let confirmCb = null;
+function confirm2(title, msg, cb) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-msg').textContent = msg;
+  confirmCb = cb;
+  document.getElementById('confirm-overlay').classList.add('show');
+}
+function confirmOK() {
+  document.getElementById('confirm-overlay').classList.remove('show');
+  if (confirmCb) { confirmCb(); confirmCb = null; }
+}
+function confirmCancel() {
+  document.getElementById('confirm-overlay').classList.remove('show');
+  confirmCb = null;
+}
+document.getElementById('confirm-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) confirmCancel();
+});
+
+// ── Utilities ─────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+</script>
+</body>
+</html>

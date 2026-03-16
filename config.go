@@ -26,6 +26,7 @@ type Config struct {
 	ClusterName          string               `yaml:"cluster_name,omitempty"`
 	Namespace            string               `yaml:"namespace"`
 	MaxRetries           int                  `yaml:"max_retries,omitempty"` // Global default: -1 for infinite, 0 to disable, N for specific limit
+	WebPort              int                  `yaml:"web_port,omitempty"`    // Port for the web UI (default: 8765)
 	AlternativeContexts  []AlternativeContext `yaml:"alternative_contexts,omitempty"`
 	Presets              []Preset             `yaml:"presets,omitempty"`
 	Services             []Service            `yaml:"services"`
@@ -129,6 +130,11 @@ func LoadConfig(filepath string) (*Config, error) {
 	// Set default max_retries if not specified
 	if config.MaxRetries == 0 {
 		config.MaxRetries = -1 // Default to infinite retries
+	}
+
+	// Set default web port
+	if config.WebPort == 0 {
+		config.WebPort = 8765
 	}
 
 	// Set default proxy pod configuration
