@@ -154,6 +154,14 @@ func GetAllPortsFromConfig(config *Config) []ConfigPort {
 				Type:        "Direct",
 			})
 		}
+		// Add sql-tap HTTP port if configured
+		if svc.SqlTapHttpPort != nil {
+			ports = append(ports, ConfigPort{
+				Port:        *svc.SqlTapHttpPort,
+				ServiceName: svc.Name + " (SQL-Tap Web)",
+				Type:        "Direct",
+			})
+		}
 	}
 
 	// Collect ports from proxy services
@@ -169,6 +177,14 @@ func GetAllPortsFromConfig(config *Config) []ConfigPort {
 			ports = append(ports, ConfigPort{
 				Port:        *pxSvc.SqlTapPort,
 				ServiceName: pxSvc.Name + " (SQL-Tap)",
+				Type:        "Proxy",
+			})
+		}
+		// Add sql-tap HTTP port if configured
+		if pxSvc.SqlTapHttpPort != nil {
+			ports = append(ports, ConfigPort{
+				Port:        *pxSvc.SqlTapHttpPort,
+				ServiceName: pxSvc.Name + " (SQL-Tap Web)",
 				Type:        "Proxy",
 			})
 		}

@@ -161,6 +161,7 @@ type serviceStateJSON struct {
 	HasSqlTap         bool   `json:"has_sql_tap"`
 	SqlTapPort        int    `json:"sql_tap_port,omitempty"`
 	SqlTapGrpcPort    int    `json:"sql_tap_grpc_port,omitempty"`
+	SqlTapHttpPort    int    `json:"sql_tap_http_port,omitempty"`
 }
 
 type proxyServiceStateJSON struct {
@@ -170,9 +171,10 @@ type proxyServiceStateJSON struct {
 	Error         string `json:"error,omitempty"`
 	IsDefault     bool   `json:"is_default"`
 	Active        bool   `json:"active"`
-	HasSqlTap     bool   `json:"has_sql_tap"`
-	SqlTapPort    int    `json:"sql_tap_port,omitempty"`
-	SqlTapGrpcPort int   `json:"sql_tap_grpc_port,omitempty"`
+	HasSqlTap      bool   `json:"has_sql_tap"`
+	SqlTapPort     int    `json:"sql_tap_port,omitempty"`
+	SqlTapGrpcPort int    `json:"sql_tap_grpc_port,omitempty"`
+	SqlTapHttpPort int    `json:"sql_tap_http_port,omitempty"`
 }
 
 type stateJSON struct {
@@ -217,6 +219,9 @@ func (wa *WebApp) buildStateJSON() string {
 		if pf.Service.SqlTapGrpcPort != nil {
 			s.SqlTapGrpcPort = *pf.Service.SqlTapGrpcPort
 		}
+		if pf.Service.SqlTapHttpPort != nil {
+			s.SqlTapHttpPort = *pf.Service.SqlTapHttpPort
+		}
 		services[i] = s
 	}
 
@@ -243,6 +248,9 @@ func (wa *WebApp) buildStateJSON() string {
 		}
 		if ps.SqlTapGrpcPort != nil {
 			entry.SqlTapGrpcPort = *ps.SqlTapGrpcPort
+		}
+		if ps.SqlTapHttpPort != nil {
+			entry.SqlTapHttpPort = *ps.SqlTapHttpPort
 		}
 		proxyServices[i] = entry
 	}

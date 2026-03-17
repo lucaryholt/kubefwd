@@ -17,6 +17,7 @@ type SqlTapManager struct {
 	listenPort   int
 	upstreamPort int
 	grpcPort     int // gRPC port for TUI client connection
+	httpPort     int // HTTP port for browser-based web interface (0 = disabled)
 	cmd          *exec.Cmd
 	cancel       context.CancelFunc
 	status       PortForwardStatus
@@ -25,13 +26,14 @@ type SqlTapManager struct {
 }
 
 // NewSqlTapManager creates a new sql-tap manager instance
-func NewSqlTapManager(enabled bool, driver string, listenPort, upstreamPort, grpcPort int) *SqlTapManager {
+func NewSqlTapManager(enabled bool, driver string, listenPort, upstreamPort, grpcPort, httpPort int) *SqlTapManager {
 	return &SqlTapManager{
 		enabled:      enabled,
 		driver:       driver,
 		listenPort:   listenPort,
 		upstreamPort: upstreamPort,
 		grpcPort:     grpcPort,
+		httpPort:     httpPort,
 		status:       StatusStopped,
 	}
 }
@@ -78,6 +80,9 @@ func (stm *SqlTapManager) Start() error {
 		fmt.Sprintf("--listen=%s", listenAddr),
 		fmt.Sprintf("--upstream=%s", upstreamAddr),
 		fmt.Sprintf("--grpc=%s", grpcAddr),
+	}
+	if stm.httpPort > 0 {
+		args = append(args, fmt.Sprintf("--http=:%d", stm.httpPort))
 	}
 
 	debugLog("Starting sql-tapd: DATABASE_URL=%s sql-tapd %s", databaseUrl, strings.Join(args, " "))
@@ -202,6 +207,13 @@ func (stm *SqlTapManager) GetGrpcPort() int {
 	stm.mu.Lock()
 	defer stm.mu.Unlock()
 	return stm.grpcPort
+}
+
+// GetHttpPort returns the HTTP port for the sql-tap browser-based web interface (0 if disabled)
+func (stm *SqlTapManager) GetHttpPort() int {
+	stm.mu.Lock()
+	defer stm.mu.Unlock()
+	return stm.httpPort
 }
 
 // GetPID returns the process ID of the sql-tapd process

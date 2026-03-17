@@ -743,6 +743,10 @@ function serviceRow(s) {
   const sqlTapBtn = s.has_sql_tap && s.status === 'running'
     ? `<button class="icon" onclick="event.stopPropagation();launchSqlTap('${esc(s.name)}')">sql-tap</button>` : '';
 
+  const sqlTapWebBtn = s.has_sql_tap && s.sql_tap_http_port > 0 && s.status === 'running'
+    ? `<a class="icon" href="http://localhost:${s.sql_tap_http_port}" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗ web</a>`
+    : '';
+
   const errorLine = s.error
     ? `<div class="svc-error" title="${esc(s.error)}">✗ ${esc(s.error)}</div>` : '';
 
@@ -761,6 +765,7 @@ function serviceRow(s) {
         </div>
       </div>
       <div class="svc-actions">
+        ${sqlTapWebBtn}
         ${sqlTapBtn}
         ${stopBtn}
       </div>
@@ -820,7 +825,9 @@ function renderProxy() {
         <div class="sqltap-info-row"><span class="sqltap-info-key">Listen port</span><span class="sqltap-info-val">:${p.sql_tap_port}</span></div>
         <div class="sqltap-info-row"><span class="sqltap-info-key">Upstream port</span><span class="sqltap-info-val">:${p.local_port}</span></div>
         <div class="sqltap-info-row"><span class="sqltap-info-key">gRPC port</span><span class="sqltap-info-val">:${p.sql_tap_grpc_port}</span></div>
+        ${p.sql_tap_http_port > 0 ? `<div class="sqltap-info-row"><span class="sqltap-info-key">Web port</span><span class="sqltap-info-val">:${p.sql_tap_http_port}</span></div>` : ''}
         <div class="sqltap-cmd">sql-tap localhost:${p.sql_tap_grpc_port}</div>
+        ${p.sql_tap_http_port > 0 ? `<a class="sqltap-cmd" href="http://localhost:${p.sql_tap_http_port}" target="_blank" rel="noopener" style="display:block;margin-top:4px;text-decoration:none">↗ Open web interface</a>` : ''}
       </div>` : '';
 
     return `<div class="proxy-row">

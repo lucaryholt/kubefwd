@@ -50,6 +50,7 @@ type Service struct {
 	SqlTapPort         *int   `yaml:"sql_tap_port,omitempty"`        // Optional: port for sql-tap proxy
 	SqlTapDriver       string `yaml:"sql_tap_driver,omitempty"`      // Optional: driver (postgres or mysql)
 	SqlTapGrpcPort     *int   `yaml:"sql_tap_grpc_port,omitempty"`   // Optional: gRPC port for sql-tap client (default: auto-assigned)
+	SqlTapHttpPort     *int   `yaml:"sql_tap_http_port,omitempty"`   // Optional: port for sql-tap browser-based web interface
 }
 
 // ProxyService represents a proxy pod service configuration
@@ -65,6 +66,7 @@ type ProxyService struct {
 	SqlTapPort         *int   `yaml:"sql_tap_port,omitempty"`        // Optional: port for sql-tap proxy
 	SqlTapDriver       string `yaml:"sql_tap_driver,omitempty"`      // Optional: driver (postgres or mysql)
 	SqlTapGrpcPort     *int   `yaml:"sql_tap_grpc_port,omitempty"`   // Optional: gRPC port for sql-tap client (default: auto-assigned)
+	SqlTapHttpPort     *int   `yaml:"sql_tap_http_port,omitempty"`   // Optional: port for sql-tap browser-based web interface
 }
 
 // GetContext returns the service-specific context or falls back to global context
@@ -197,6 +199,18 @@ func LoadConfig(filepath string) (*Config, error) {
 				return nil, fmt.Errorf("service %d (%s): invalid sql_tap_grpc_port", i, svc.Name)
 			}
 		}
+		// Validate sql-tap HTTP port if specified
+		if svc.SqlTapHttpPort != nil {
+			if *svc.SqlTapHttpPort <= 0 || *svc.SqlTapHttpPort > 65535 {
+				return nil, fmt.Errorf("service %d (%s): invalid sql_tap_http_port", i, svc.Name)
+			}
+			if *svc.SqlTapHttpPort == svc.LocalPort {
+				return nil, fmt.Errorf("service %d (%s): sql_tap_http_port cannot be the same as local_port", i, svc.Name)
+			}
+			if svc.SqlTapPort != nil && *svc.SqlTapHttpPort == *svc.SqlTapPort {
+				return nil, fmt.Errorf("service %d (%s): sql_tap_http_port cannot be the same as sql_tap_port", i, svc.Name)
+			}
+		}
 	}
 
 	// Validate each proxy service
@@ -232,6 +246,18 @@ func LoadConfig(filepath string) (*Config, error) {
 		if pxSvc.SqlTapGrpcPort != nil {
 			if *pxSvc.SqlTapGrpcPort <= 0 || *pxSvc.SqlTapGrpcPort > 65535 {
 				return nil, fmt.Errorf("proxy_service %d (%s): invalid sql_tap_grpc_port", i, pxSvc.Name)
+			}
+		}
+		// Validate sql-tap HTTP port if specified
+		if pxSvc.SqlTapHttpPort != nil {
+			if *pxSvc.SqlTapHttpPort <= 0 || *pxSvc.SqlTapHttpPort > 65535 {
+				return nil, fmt.Errorf("proxy_service %d (%s): invalid sql_tap_http_port", i, pxSvc.Name)
+			}
+			if *pxSvc.SqlTapHttpPort == pxSvc.LocalPort {
+				return nil, fmt.Errorf("proxy_service %d (%s): sql_tap_http_port cannot be the same as local_port", i, pxSvc.Name)
+			}
+			if pxSvc.SqlTapPort != nil && *pxSvc.SqlTapHttpPort == *pxSvc.SqlTapPort {
+				return nil, fmt.Errorf("proxy_service %d (%s): sql_tap_http_port cannot be the same as sql_tap_port", i, pxSvc.Name)
 			}
 		}
 	}
