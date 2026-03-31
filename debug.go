@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,6 +31,26 @@ func debugLog(format string, args ...interface{}) {
 		debugLines = debugLines[len(debugLines)-debugMaxLines:]
 	}
 	debugLinesMu.Unlock()
+}
+
+// debugRunCmd logs the full command before running it, executes it with
+// CombinedOutput, then logs the result. Use this for all short-lived commands.
+func debugRunCmd(cmd *exec.Cmd) ([]byte, error) {
+	debugLog("CMD: %s", strings.Join(cmd.Args, " "))
+	out, err := cmd.CombinedOutput()
+	outStr := strings.TrimSpace(string(out))
+	if err != nil {
+		if outStr != "" {
+			debugLog("OUT: error=%v  output=%s", err, outStr)
+		} else {
+			debugLog("OUT: error=%v", err)
+		}
+	} else if outStr != "" {
+		debugLog("OUT: %s", outStr)
+	} else {
+		debugLog("OUT: (ok, no output)")
+	}
+	return out, err
 }
 
 func getDebugLines() []string {

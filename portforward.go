@@ -174,9 +174,10 @@ func (pf *PortForward) monitor(stderr *strings.Builder) {
 	pf.mu.Lock()
 	
 	if err != nil && pf.Status != StatusStopped {
+		debugLog("EXIT: %v  cmd=%s", err, pf.CommandString)
 		// Check if we should retry
 		shouldRetry := !pf.manualStop && (pf.maxRetries == -1 || pf.retryCount < pf.maxRetries)
-		
+
 		if shouldRetry {
 			// Calculate exponential backoff delay: min(2^retryCount seconds, 60 seconds)
 			backoffSeconds := math.Min(math.Pow(2, float64(pf.retryCount)), 60)
@@ -293,7 +294,7 @@ func (pf *PortForward) GetPID() int {
 // CheckKubectlAvailable verifies that kubectl is installed and available
 func CheckKubectlAvailable() error {
 	cmd := exec.Command("kubectl", "version", "--client")
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 	if err != nil {
 		return fmt.Errorf("kubectl not available: %w\nOutput: %s", err, string(output))
 	}
@@ -303,7 +304,7 @@ func CheckKubectlAvailable() error {
 // ValidateContext checks if the specified context exists
 func ValidateContext(context string) error {
 	cmd := exec.Command("kubectl", "config", "get-contexts", context, "--no-headers")
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 	if err != nil || len(strings.TrimSpace(string(output))) == 0 {
 		return fmt.Errorf("context '%s' not found", context)
 	}

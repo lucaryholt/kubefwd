@@ -118,16 +118,16 @@ func (pm *ProxyPodManager) CreatePodWithServices(selectedServices []ProxyService
 		"--restart=Never",
 		"--command", "--", "sh", "-c", shellCommand)
 
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 	if err != nil {
 		// Check if it's an AlreadyExists error even though we tried to delete
 		if strings.Contains(string(output), "AlreadyExists") {
 			debugLog("Pod still exists after deletion attempt, force deleting and retrying...")
-			
+
 			// Force delete and wait
 			pm.deletePodUnsafe()
 			time.Sleep(3 * time.Second)
-			
+
 			// Retry creation
 			retryCmd := exec.Command("kubectl",
 				"--context="+pm.context,
@@ -135,23 +135,19 @@ func (pm *ProxyPodManager) CreatePodWithServices(selectedServices []ProxyService
 				"--image="+pm.podImage,
 				"--restart=Never",
 				"--command", "--", "sh", "-c", shellCommand)
-			
-			output, err = retryCmd.CombinedOutput()
+
+			output, err = debugRunCmd(retryCmd)
 			if err != nil {
 				pm.status = ProxyPodStatusError
 				pm.errorMessage = fmt.Sprintf("Failed to create pod (retry): %v | %s", err, string(output))
-				debugLog("Pod creation retry failed: %s", pm.errorMessage)
 				return fmt.Errorf("%s", pm.errorMessage)
 			}
 		} else {
 			pm.status = ProxyPodStatusError
 			pm.errorMessage = fmt.Sprintf("Failed to create pod: %v | %s", err, string(output))
-			debugLog("Pod creation failed: %s", pm.errorMessage)
 			return fmt.Errorf("%s", pm.errorMessage)
 		}
 	}
-
-	debugLog("Pod created: %s", string(output))
 
 	// Wait for pod to be ready
 	if err := pm.waitForPodReady(60 * time.Second); err != nil {
@@ -163,17 +159,15 @@ func (pm *ProxyPodManager) CreatePodWithServices(selectedServices []ProxyService
 			"--context="+pm.context,
 			"-n", pm.namespace,
 			"describe", "pod", pm.podName)
-		descOutput, _ := descCmd.CombinedOutput()
-		debugLog("Pod failed to become ready. Pod description:\n%s", string(descOutput))
-		
+		debugRunCmd(descCmd) //nolint — result already logged by debugRunCmd
+
 		// Also get logs
 		logsCmd := exec.Command("kubectl",
 			"--context="+pm.context,
 			"-n", pm.namespace,
 			"logs", pm.podName,
 			"--all-containers=true")
-		logsOutput, _ := logsCmd.CombinedOutput()
-		debugLog("Pod logs:\n%s", string(logsOutput))
+		debugRunCmd(logsCmd) //nolint — result already logged by debugRunCmd
 		
 		return err
 	}
@@ -192,7 +186,7 @@ func (pm *ProxyPodManager) checkPodExists() (exists bool, ready bool, err error)
 		"get", "pod", pm.podName,
 		"-o", "json")
 
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 	if err != nil {
 		// Pod doesn't exist
 		if strings.Contains(string(output), "NotFound") {
@@ -241,13 +235,10 @@ func (pm *ProxyPodManager) deletePodUnsafe() error {
 		"--wait=false",
 		"--force")
 
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 	if err != nil && !strings.Contains(string(output), "NotFound") {
-		debugLog("Force delete failed: %v | %s", err, string(output))
 		return fmt.Errorf("kubectl delete pod failed: %v | %s", err, string(output))
 	}
-
-	debugLog("Pod deletion initiated: %s", string(output))
 
 	// Wait for pod to actually be deleted (max 30 seconds)
 	deadline := time.Now().Add(30 * time.Second)
@@ -259,23 +250,23 @@ func (pm *ProxyPodManager) deletePodUnsafe() error {
 			"get", "pod", pm.podName,
 			"--ignore-not-found=true",
 			"--no-headers")
-		
-		checkOutput, _ := checkCmd.CombinedOutput()
-		
+
+		checkOutput, _ := debugRunCmd(checkCmd)
+
 		// If no output, pod is gone
 		if len(strings.TrimSpace(string(checkOutput))) == 0 {
 			debugLog("Pod successfully deleted")
 			return nil
 		}
-		
+
 		debugLog("Waiting for pod deletion... (status: %s)", strings.TrimSpace(string(checkOutput)))
-		
+
 		time.Sleep(1 * time.Second)
 	}
 
 	// If we got here, deletion timed out - try one more force delete
 	debugLog("Deletion timeout, attempting final force delete")
-	
+
 	finalCmd := exec.Command("kubectl",
 		"--context="+pm.context,
 		"-n", pm.namespace,
@@ -283,14 +274,12 @@ func (pm *ProxyPodManager) deletePodUnsafe() error {
 		"--grace-period=0",
 		"--force",
 		"--ignore-not-found=true")
-	
-	finalOutput, _ := finalCmd.CombinedOutput()
-	
-	debugLog("Final force delete: %s", string(finalOutput))
+
+	debugRunCmd(finalCmd) //nolint — result already logged by debugRunCmd
 
 	// Wait a bit more after force delete
 	time.Sleep(2 * time.Second)
-	
+
 	return nil
 }
 

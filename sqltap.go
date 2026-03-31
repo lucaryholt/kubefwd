@@ -133,11 +133,12 @@ func (stm *SqlTapManager) monitor(stderr *strings.Builder) {
 	defer stm.mu.Unlock()
 
 	if err != nil && stm.status != StatusStopped {
-		stm.status = StatusError
 		stm.errorMessage = fmt.Sprintf("sql-tapd process exited: %v", err)
 		if stderr.Len() > 0 {
 			stm.errorMessage += fmt.Sprintf(" | stderr: %s", strings.TrimSpace(stderr.String()))
 		}
+		debugLog("EXIT: %v  cmd=sql-tapd  stderr=%s", err, strings.TrimSpace(stderr.String()))
+		stm.status = StatusError
 	} else {
 		if stm.status == StatusRunning || stm.status == StatusStarting {
 			stm.status = StatusStopped
@@ -229,7 +230,7 @@ func (stm *SqlTapManager) GetPID() int {
 // CheckSqlTapdAvailable verifies that sql-tapd is installed and available
 func CheckSqlTapdAvailable() error {
 	cmd := exec.Command("sql-tapd", "--version")
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 	if err != nil {
 		return fmt.Errorf("sql-tapd not available: %w\nOutput: %s", err, string(output))
 	}

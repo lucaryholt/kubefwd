@@ -120,10 +120,12 @@ func launchInITerm2(grpcPort int) error {
 	`, sqlTapCmd)
 
 	cmd := exec.Command("osascript", "-e", appleScript)
+	debugLog("CMD: osascript <AppleScript: iTerm2 new tab: %s>", sqlTapCmd)
 	if err := cmd.Run(); err != nil {
+		debugLog("OUT: error=%v", err)
 		return fmt.Errorf("failed to launch iTerm2 tab: %w", err)
 	}
-
+	debugLog("OUT: (ok)")
 	debugLog("Launched sql-tap in new iTerm2 tab: %s", sqlTapCmd)
 	return nil
 }
@@ -149,10 +151,12 @@ func launchInAppleTerminal(grpcPort int) error {
 	`, sqlTapCmd)
 
 	cmd := exec.Command("osascript", "-e", appleScript)
+	debugLog("CMD: osascript <AppleScript: Terminal.app new tab: %s>", sqlTapCmd)
 	if err := cmd.Run(); err != nil {
+		debugLog("OUT: error=%v", err)
 		return fmt.Errorf("failed to launch Terminal.app tab: %w", err)
 	}
-
+	debugLog("OUT: (ok)")
 	debugLog("Launched sql-tap in new Terminal.app tab: %s", sqlTapCmd)
 	return nil
 }
@@ -163,10 +167,12 @@ func launchInKitty(grpcPort int) error {
 	
 	// Use kitty remote control to launch in new tab
 	cmd := exec.Command("kitty", "@", "launch", "--type=tab", "--tab-title=sql-tap", "sql-tap", fmt.Sprintf("localhost:%d", grpcPort))
+	debugLog("CMD: kitty @ launch --type=tab --tab-title=sql-tap sql-tap localhost:%d", grpcPort)
 	if err := cmd.Start(); err != nil {
+		debugLog("OUT: error=%v", err)
 		return fmt.Errorf("failed to launch kitty tab: %w", err)
 	}
-
+	debugLog("OUT: (started)")
 	debugLog("Launched sql-tap in new kitty tab: %s", sqlTapCmd)
 	return nil
 }
@@ -177,10 +183,12 @@ func launchInTmux(grpcPort int) error {
 	
 	// Create a new tmux window with the command
 	cmd := exec.Command("tmux", "new-window", "-n", "sql-tap", sqlTapCmd)
+	debugLog("CMD: tmux new-window -n sql-tap %s", sqlTapCmd)
 	if err := cmd.Run(); err != nil {
+		debugLog("OUT: error=%v", err)
 		return fmt.Errorf("failed to launch tmux window: %w", err)
 	}
-
+	debugLog("OUT: (ok)")
 	debugLog("Launched sql-tap in new tmux window: %s", sqlTapCmd)
 	return nil
 }
@@ -189,10 +197,12 @@ func launchInTmux(grpcPort int) error {
 func launchInWezTerm(grpcPort int) error {
 	// WezTerm CLI to spawn a new tab
 	cmd := exec.Command("wezterm", "cli", "spawn", "--new-window", "sql-tap", fmt.Sprintf("localhost:%d", grpcPort))
+	debugLog("CMD: wezterm cli spawn --new-window sql-tap localhost:%d", grpcPort)
 	if err := cmd.Start(); err != nil {
+		debugLog("OUT: error=%v", err)
 		return fmt.Errorf("failed to launch WezTerm tab: %w", err)
 	}
-
+	debugLog("OUT: (started)")
 	debugLog("Launched sql-tap in new WezTerm tab")
 	return nil
 }

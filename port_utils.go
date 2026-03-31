@@ -40,7 +40,7 @@ func GetPortUsage(port int) (PortUsageInfo, error) {
 	// -n prevents hostname lookups
 	// -sTCP:LISTEN only shows listening TCP connections
 	cmd := exec.Command("lsof", "-i", fmt.Sprintf(":%d", port), "-P", "-n", "-sTCP:LISTEN")
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 
 	// If lsof returns an error, it might mean the port is not in use or lsof is not available
 	if err != nil {
@@ -104,7 +104,7 @@ func GetPortUsage(port int) (PortUsageInfo, error) {
 func getProcessDetails(pid int) string {
 	// Use ps to get the full command line
 	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=")
-	output, err := cmd.CombinedOutput()
+	output, err := debugRunCmd(cmd)
 	if err != nil {
 		return ""
 	}
@@ -125,12 +125,13 @@ func KillProcess(pid int) error {
 		return fmt.Errorf("invalid PID: %d", pid)
 	}
 
-	// Send SIGTERM to allow graceful shutdown
+	debugLog("CMD: kill -SIGTERM %d", pid)
 	err := syscall.Kill(pid, syscall.SIGTERM)
 	if err != nil {
+		debugLog("OUT: error=%v", err)
 		return fmt.Errorf("failed to kill process %d: %w", pid, err)
 	}
-
+	debugLog("OUT: (ok, SIGTERM sent to %d)", pid)
 	return nil
 }
 
