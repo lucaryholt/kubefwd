@@ -975,7 +975,10 @@ async function applyProxy() {
 
   const doApply = () => {
     api('POST', '/api/proxy-services/apply', { names });
-    pendingProxy = null;
+    // Keep pendingProxy as-is so the user's selection stays visible while pods
+    // are starting. The pending banner will hide once the server's active state
+    // matches the selection (all pods ready). Setting it to null here would
+    // cause re-sync from a partially-ready server and lose multi-context selections.
   };
 
   if (conflicts.length > 0) {
