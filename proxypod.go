@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,30 @@ type ProxyPodManager struct {
 	status          ProxyPodStatus
 	errorMessage    string
 	mu              sync.Mutex
+}
+
+// sanitizePodNameSegment converts an arbitrary string into a valid k8s name segment:
+// lowercase, non-alphanumeric chars replaced with '-', leading/trailing dashes removed.
+var nonAlphanumRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+func sanitizePodNameSegment(s string) string {
+	s = strings.ToLower(s)
+	s = nonAlphanumRe.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	return s
+}
+
+// BuildPodName returns a stable, valid k8s pod name for the given base name,
+// context and namespace. The result is at most 63 characters.
+func BuildPodName(baseName, podContext, podNamespace string) string {
+	ctx := sanitizePodNameSegment(podContext)
+	ns := sanitizePodNameSegment(podNamespace)
+	name := baseName + "-" + ctx + "-" + ns
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	name = strings.TrimRight(name, "-")
+	return name
 }
 
 // NewProxyPodManager creates a new proxy pod manager
@@ -354,16 +379,11 @@ type ProxyForward struct {
 	cmd           *exec.Cmd
 	cancel        context.CancelFunc
 	mu            sync.Mutex
-	context       string
-	namespace     string
 	sqlTapManager *SqlTapManager // Manages sql-tapd process if enabled
 }
 
 // NewProxyForward creates a new proxy forward instance
-func NewProxyForward(proxyService ProxyService, podManager *ProxyPodManager, globalContext, globalNamespace string) *ProxyForward {
-	context := proxyService.GetContext(globalContext)
-	namespace := proxyService.GetNamespace(globalNamespace)
-
+func NewProxyForward(proxyService ProxyService, podManager *ProxyPodManager) *ProxyForward {
 	// Initialize sql-tap manager if configured
 	var sqlTapManager *SqlTapManager
 	if proxyService.SqlTapPort != nil {
@@ -391,8 +411,6 @@ func NewProxyForward(proxyService ProxyService, podManager *ProxyPodManager, glo
 		ProxyService:  proxyService,
 		PodManager:    podManager,
 		Status:        StatusStopped,
-		context:       context,
-		namespace:     namespace,
 		sqlTapManager: sqlTapManager,
 	}
 }

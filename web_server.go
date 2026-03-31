@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,16 +18,38 @@ var webFS embed.FS
 
 // WebApp is the central state holder for the web-based UI.
 type WebApp struct {
-	config         *Config
-	configFile     string
-	portForwards   []*PortForward
-	proxyForwards  map[string]*ProxyForward
-	proxyPodManager *ProxyPodManager
-	mu             sync.RWMutex
+	config           *Config
+	configFile       string
+	portForwards     []*PortForward
+	proxyForwards    map[string]*ProxyForward
+	proxyPodManagers map[string]*ProxyPodManager // keyed by "context/namespace"
+	mu               sync.RWMutex
 
 	// SSE clients
-	sseClients   map[chan string]struct{}
-	sseMu        sync.Mutex
+	sseClients map[chan string]struct{}
+	sseMu      sync.Mutex
+}
+
+// proxyGroupKey returns the map key for a context+namespace pair.
+func proxyGroupKey(ctx, ns string) string { return ctx + "/" + ns }
+
+// buildProxyPodManagers creates one ProxyPodManager per unique (context, namespace)
+// group found in the proxy services list.
+func buildProxyPodManagers(config *Config) map[string]*ProxyPodManager {
+	managers := make(map[string]*ProxyPodManager)
+	for _, ps := range config.ProxyServices {
+		key := ps.ProxyGroupKey()
+		if _, exists := managers[key]; !exists {
+			podName := BuildPodName(config.ProxyPodName, ps.ProxyPodContext, ps.ProxyPodNamespace)
+			managers[key] = NewProxyPodManager(
+				podName,
+				config.ProxyPodImage,
+				ps.ProxyPodNamespace,
+				ps.ProxyPodContext,
+			)
+		}
+	}
+	return managers
 }
 
 // NewWebApp creates and initialises a WebApp from the given config.
@@ -36,23 +59,15 @@ func NewWebApp(config *Config, configFile string) *WebApp {
 		pfs[i] = NewPortForward(svc, config.ClusterContext, config.Namespace, config.MaxRetries)
 	}
 
-	var ppm *ProxyPodManager
-	if len(config.ProxyServices) > 0 {
-		ppm = NewProxyPodManager(
-			config.ProxyPodName,
-			config.ProxyPodImage,
-			config.ProxyPodNamespace,
-			config.ProxyPodContext,
-		)
-	}
+	managers := buildProxyPodManagers(config)
 
 	return &WebApp{
-		config:          config,
-		configFile:      configFile,
-		portForwards:    pfs,
-		proxyPodManager: ppm,
-		proxyForwards:   make(map[string]*ProxyForward),
-		sseClients:      make(map[chan string]struct{}),
+		config:           config,
+		configFile:       configFile,
+		portForwards:     pfs,
+		proxyPodManagers: managers,
+		proxyForwards:    make(map[string]*ProxyForward),
+		sseClients:       make(map[chan string]struct{}),
 	}
 }
 
@@ -67,28 +82,36 @@ func (wa *WebApp) StartDefaults() {
 
 // StartDefaultProxies starts proxy services marked selected_by_default.
 func (wa *WebApp) StartDefaultProxies() {
-	var defaults []ProxyService
+	// Group default services by context+namespace
+	groups := make(map[string][]ProxyService)
 	for _, ps := range wa.config.ProxyServices {
 		if ps.SelectedByDefault {
-			defaults = append(defaults, ps)
+			key := ps.ProxyGroupKey()
+			groups[key] = append(groups[key], ps)
 		}
 	}
-	if len(defaults) == 0 {
+	if len(groups) == 0 {
 		return
 	}
 	wa.mu.Lock()
 	defer wa.mu.Unlock()
-	if err := wa.proxyPodManager.CreatePodWithServices(defaults); err != nil {
-		return
-	}
-	for _, ps := range defaults {
-		pxf := NewProxyForward(ps, wa.proxyPodManager, wa.config.ClusterContext, wa.config.Namespace)
-		_ = pxf.Start()
-		wa.proxyForwards[ps.Name] = pxf
+	for key, svcs := range groups {
+		mgr, ok := wa.proxyPodManagers[key]
+		if !ok {
+			continue
+		}
+		if err := mgr.CreatePodWithServices(svcs); err != nil {
+			continue
+		}
+		for _, ps := range svcs {
+			pxf := NewProxyForward(ps, mgr)
+			_ = pxf.Start()
+			wa.proxyForwards[ps.Name] = pxf
+		}
 	}
 }
 
-// StopAll stops every running forward and deletes the proxy pod.
+// StopAll stops every running forward and deletes all proxy pods.
 func (wa *WebApp) StopAll() {
 	for _, pf := range wa.portForwards {
 		if pf.IsRunning() {
@@ -100,8 +123,8 @@ func (wa *WebApp) StopAll() {
 	for _, pxf := range wa.proxyForwards {
 		pxf.Stop()
 	}
-	if wa.proxyPodManager != nil {
-		wa.proxyPodManager.DeletePod()
+	for _, mgr := range wa.proxyPodManagers {
+		mgr.DeletePod()
 	}
 }
 
@@ -165,32 +188,41 @@ type serviceStateJSON struct {
 }
 
 type proxyServiceStateJSON struct {
-	Name          string `json:"name"`
-	LocalPort     int    `json:"local_port"`
-	Status        string `json:"status"`
-	Error         string `json:"error,omitempty"`
-	IsDefault     bool   `json:"is_default"`
-	Active        bool   `json:"active"`
-	HasSqlTap      bool   `json:"has_sql_tap"`
-	SqlTapPort     int    `json:"sql_tap_port,omitempty"`
-	SqlTapGrpcPort int    `json:"sql_tap_grpc_port,omitempty"`
-	SqlTapHttpPort int    `json:"sql_tap_http_port,omitempty"`
+	Name              string `json:"name"`
+	LocalPort         int    `json:"local_port"`
+	Status            string `json:"status"`
+	Error             string `json:"error,omitempty"`
+	IsDefault         bool   `json:"is_default"`
+	Active            bool   `json:"active"`
+	ProxyPodContext   string `json:"proxy_pod_context"`
+	ProxyPodNamespace string `json:"proxy_pod_namespace"`
+	HasSqlTap         bool   `json:"has_sql_tap"`
+	SqlTapPort        int    `json:"sql_tap_port,omitempty"`
+	SqlTapGrpcPort    int    `json:"sql_tap_grpc_port,omitempty"`
+	SqlTapHttpPort    int    `json:"sql_tap_http_port,omitempty"`
+}
+
+type proxyGroupStateJSON struct {
+	GroupKey  string                  `json:"group_key"`
+	Context   string                  `json:"context"`
+	Namespace string                  `json:"namespace"`
+	PodStatus string                  `json:"pod_status"`
+	PodError  string                  `json:"pod_error,omitempty"`
+	Services  []proxyServiceStateJSON `json:"services"`
 }
 
 type stateJSON struct {
-	ClusterContext   string                  `json:"cluster_context"`
-	ClusterName      string                  `json:"cluster_name"`
-	Namespace        string                  `json:"namespace"`
-	ConfigFile       string                  `json:"config_file"`
-	Services         []serviceStateJSON      `json:"services"`
-	ProxyServices    []proxyServiceStateJSON `json:"proxy_services"`
-	ProxyPodStatus   string                  `json:"proxy_pod_status"`
-	ProxyPodError    string                  `json:"proxy_pod_error,omitempty"`
-	Presets          []Preset                `json:"presets"`
-	Contexts         []AlternativeContext    `json:"contexts"`
-	HasProxyServices bool                    `json:"has_proxy_services"`
-	DebugMode        bool                    `json:"debug_mode"`
-	DebugLines       []string                `json:"debug_lines"`
+	ClusterContext   string                `json:"cluster_context"`
+	ClusterName      string                `json:"cluster_name"`
+	Namespace        string                `json:"namespace"`
+	ConfigFile       string                `json:"config_file"`
+	Services         []serviceStateJSON    `json:"services"`
+	ProxyGroups      []proxyGroupStateJSON `json:"proxy_groups"`
+	Presets          []Preset              `json:"presets"`
+	Contexts         []AlternativeContext  `json:"contexts"`
+	HasProxyServices bool                  `json:"has_proxy_services"`
+	DebugMode        bool                  `json:"debug_mode"`
+	DebugLines       []string              `json:"debug_lines"`
 }
 
 func (wa *WebApp) buildStateJSON() string {
@@ -225,42 +257,74 @@ func (wa *WebApp) buildStateJSON() string {
 		services[i] = s
 	}
 
-	proxyServices := make([]proxyServiceStateJSON, len(wa.config.ProxyServices))
-	for i, ps := range wa.config.ProxyServices {
-		status := string(StatusStopped)
-		errMsg := ""
-		if pxf, ok := wa.proxyForwards[ps.Name]; ok {
-			st, e := pxf.GetStatus()
-			status = string(st)
-			errMsg = e
+	// Build proxy groups: one entry per unique (context, namespace), preserving sorted order
+	groupOrder := []string{}
+	groupSeen := make(map[string]bool)
+	for _, ps := range wa.config.ProxyServices {
+		key := ps.ProxyGroupKey()
+		if !groupSeen[key] {
+			groupSeen[key] = true
+			groupOrder = append(groupOrder, key)
 		}
-		entry := proxyServiceStateJSON{
-			Name:      ps.Name,
-			LocalPort: ps.LocalPort,
-			Status:    status,
-			Error:     errMsg,
-			IsDefault: ps.SelectedByDefault,
-			Active:    wa.proxyPodManager != nil && wa.proxyPodManager.IsServiceActive(ps.Name),
-			HasSqlTap: ps.SqlTapPort != nil,
-		}
-		if ps.SqlTapPort != nil {
-			entry.SqlTapPort = *ps.SqlTapPort
-		}
-		if ps.SqlTapGrpcPort != nil {
-			entry.SqlTapGrpcPort = *ps.SqlTapGrpcPort
-		}
-		if ps.SqlTapHttpPort != nil {
-			entry.SqlTapHttpPort = *ps.SqlTapHttpPort
-		}
-		proxyServices[i] = entry
 	}
 
-	podStatus := "not_created"
-	podError := ""
-	if wa.proxyPodManager != nil {
-		st, e, _ := wa.proxyPodManager.GetStatus()
-		podStatus = string(st)
-		podError = e
+	proxyGroups := make([]proxyGroupStateJSON, 0, len(groupOrder))
+	for _, key := range groupOrder {
+		mgr := wa.proxyPodManagers[key]
+		podStatus := string(ProxyPodStatusNotCreated)
+		podError := ""
+		if mgr != nil {
+			st, e, _ := mgr.GetStatus()
+			podStatus = string(st)
+			podError = e
+		}
+
+		var groupSvcs []proxyServiceStateJSON
+		for _, ps := range wa.config.ProxyServices {
+			if ps.ProxyGroupKey() != key {
+				continue
+			}
+			status := string(StatusStopped)
+			errMsg := ""
+			if pxf, ok := wa.proxyForwards[ps.Name]; ok {
+				st, e := pxf.GetStatus()
+				status = string(st)
+				errMsg = e
+			}
+			active := mgr != nil && mgr.IsServiceActive(ps.Name)
+			entry := proxyServiceStateJSON{
+				Name:              ps.Name,
+				LocalPort:         ps.LocalPort,
+				Status:            status,
+				Error:             errMsg,
+				IsDefault:         ps.SelectedByDefault,
+				Active:            active,
+				ProxyPodContext:   ps.ProxyPodContext,
+				ProxyPodNamespace: ps.ProxyPodNamespace,
+				HasSqlTap:         ps.SqlTapPort != nil,
+			}
+			if ps.SqlTapPort != nil {
+				entry.SqlTapPort = *ps.SqlTapPort
+			}
+			if ps.SqlTapGrpcPort != nil {
+				entry.SqlTapGrpcPort = *ps.SqlTapGrpcPort
+			}
+			if ps.SqlTapHttpPort != nil {
+				entry.SqlTapHttpPort = *ps.SqlTapHttpPort
+			}
+			groupSvcs = append(groupSvcs, entry)
+		}
+
+		// Split key back into context and namespace
+		ctx, ns := splitGroupKey(key)
+		proxyGroups = append(proxyGroups, proxyGroupStateJSON{
+			GroupKey:  key,
+			Context:   ctx,
+			Namespace: ns,
+			PodStatus: podStatus,
+			PodError:  podError,
+			Services:  groupSvcs,
+		})
 	}
 
 	state := stateJSON{
@@ -269,9 +333,7 @@ func (wa *WebApp) buildStateJSON() string {
 		Namespace:        wa.config.Namespace,
 		ConfigFile:       wa.configFile,
 		Services:         services,
-		ProxyServices:    proxyServices,
-		ProxyPodStatus:   podStatus,
-		ProxyPodError:    podError,
+		ProxyGroups:      proxyGroups,
 		Presets:          wa.config.Presets,
 		Contexts:         wa.config.AlternativeContexts,
 		HasProxyServices: len(wa.config.ProxyServices) > 0,
@@ -281,6 +343,17 @@ func (wa *WebApp) buildStateJSON() string {
 
 	b, _ := json.Marshal(state)
 	return string(b)
+}
+
+// splitGroupKey splits a "context/namespace" key back into its components.
+// It handles contexts that may themselves contain slashes by splitting on the last slash.
+func splitGroupKey(key string) (ctx, ns string) {
+	// The namespace cannot contain slashes, so split on last '/'
+	idx := strings.LastIndex(key, "/")
+	if idx < 0 {
+		return key, ""
+	}
+	return key[:idx], key[idx+1:]
 }
 
 // --- HTTP server ---
@@ -306,6 +379,7 @@ func (wa *WebApp) ListenAndServe(port int) error {
 	mux.HandleFunc("GET /api/proxy-services", wa.handleGetProxyServices)
 	mux.HandleFunc("POST /api/proxy-services/apply", wa.handleApplyProxyServices)
 	mux.HandleFunc("POST /api/proxy-services/reset", wa.handleResetProxyPod)
+	mux.HandleFunc("POST /api/proxy-services/kill-pod", wa.handleKillProxyPod)
 
 	// Presets
 	mux.HandleFunc("GET /api/presets", wa.handleGetPresets)
@@ -474,110 +548,187 @@ func (wa *WebApp) handleApplyProxyServices(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if wa.proxyPodManager == nil {
+	if len(wa.proxyPodManagers) == 0 {
 		jsonError(w, "no proxy services configured", http.StatusBadRequest)
 		return
 	}
 
-	// Build selected proxy services
-	selected := []ProxyService{}
+	// Build selected service set and group by context+namespace
+	nameSet := make(map[string]struct{}, len(body.Names))
+	for _, n := range body.Names {
+		nameSet[n] = struct{}{}
+	}
+
+	selectedByGroup := make(map[string][]ProxyService)
 	for _, ps := range wa.config.ProxyServices {
-		for _, n := range body.Names {
-			if ps.Name == n {
-				selected = append(selected, ps)
-				break
-			}
+		key := ps.ProxyGroupKey()
+		if _, ok := nameSet[ps.Name]; ok {
+			selectedByGroup[key] = append(selectedByGroup[key], ps)
 		}
 	}
 
 	wa.mu.Lock()
-	defer wa.mu.Unlock()
-
-	// Stop existing proxy forwards
+	// Stop all existing proxy forwards
 	for _, pxf := range wa.proxyForwards {
 		pxf.Stop()
 	}
 	wa.proxyForwards = make(map[string]*ProxyForward)
+	managers := wa.proxyPodManagers
+	wa.mu.Unlock()
 
-	if len(selected) == 0 {
-		wa.proxyPodManager.DeletePod()
-		jsonOK(w, map[string]string{"status": "ok"})
-		return
+	// For each known group, handle pod creation or deletion concurrently
+	type groupWork struct {
+		key  string
+		svcs []ProxyService
+		mgr  *ProxyPodManager
+	}
+	works := make([]groupWork, 0, len(managers))
+	for key, mgr := range managers {
+		svcs := selectedByGroup[key] // may be nil/empty
+		works = append(works, groupWork{key: key, svcs: svcs, mgr: mgr})
 	}
 
 	go func() {
-		if err := wa.proxyPodManager.CreatePodWithServices(selected); err != nil {
-			return
-		}
-		wa.mu.Lock()
-		defer wa.mu.Unlock()
-		for _, ps := range selected {
-			pxf := NewProxyForward(ps, wa.proxyPodManager, wa.config.ClusterContext, wa.config.Namespace)
-			_ = pxf.Start()
-			wa.proxyForwards[ps.Name] = pxf
+		for _, w := range works {
+			if len(w.svcs) == 0 {
+				w.mgr.DeletePod()
+				continue
+			}
+			if err := w.mgr.CreatePodWithServices(w.svcs); err != nil {
+				continue
+			}
+			wa.mu.Lock()
+			for _, ps := range w.svcs {
+				pxf := NewProxyForward(ps, w.mgr)
+				_ = pxf.Start()
+				wa.proxyForwards[ps.Name] = pxf
+			}
+			wa.mu.Unlock()
 		}
 	}()
 
 	jsonOK(w, map[string]string{"status": "applying"})
 }
 
-// handleResetProxyPod stops all proxy forwards, deletes the pod, then recreates
-// it with the same set of previously active services.
+// handleResetProxyPod stops all proxy forwards, deletes all pods, then recreates
+// them with the same set of previously active services.
 func (wa *WebApp) handleResetProxyPod(w http.ResponseWriter, r *http.Request) {
-	if wa.proxyPodManager == nil {
+	if len(wa.proxyPodManagers) == 0 {
 		jsonError(w, "no proxy services configured", http.StatusBadRequest)
 		return
 	}
 
 	wa.mu.Lock()
-	// Capture which services were active before tearing down
-	activeNames := wa.proxyPodManager.GetActiveServiceNames()
-
-	// Stop all proxy forwards (each Stop() also stops its sql-tap)
+	// Capture active service names per group
+	type groupSnapshot struct {
+		mgr   *ProxyPodManager
+		names []string
+	}
+	snapshots := make([]groupSnapshot, 0, len(wa.proxyPodManagers))
+	for _, mgr := range wa.proxyPodManagers {
+		snapshots = append(snapshots, groupSnapshot{
+			mgr:   mgr,
+			names: mgr.GetActiveServiceNames(),
+		})
+	}
+	// Stop all proxy forwards
 	for _, pxf := range wa.proxyForwards {
 		pxf.Stop()
 	}
 	wa.proxyForwards = make(map[string]*ProxyForward)
 	wa.mu.Unlock()
 
-	// Delete the proxy pod outside the lock (blocking kubectl call)
-	wa.proxyPodManager.DeletePod()
+	// Delete all pods outside the lock
+	for _, snap := range snapshots {
+		snap.mgr.DeletePod()
+	}
 
-	if len(activeNames) == 0 {
+	// Check if anything was active
+	hasActive := false
+	for _, snap := range snapshots {
+		if len(snap.names) > 0 {
+			hasActive = true
+			break
+		}
+	}
+	if !hasActive {
 		jsonOK(w, map[string]string{"status": "reset"})
 		return
 	}
 
-	// Rebuild the selected service list from config
+	// Rebuild selected services per group from config
 	wa.mu.RLock()
-	nameSet := make(map[string]struct{}, len(activeNames))
-	for _, n := range activeNames {
-		nameSet[n] = struct{}{}
+	type groupRecreate struct {
+		mgr  *ProxyPodManager
+		svcs []ProxyService
 	}
-	selected := make([]ProxyService, 0, len(activeNames))
-	for _, ps := range wa.config.ProxyServices {
-		if _, ok := nameSet[ps.Name]; ok {
-			selected = append(selected, ps)
+	recreates := make([]groupRecreate, 0, len(snapshots))
+	for _, snap := range snapshots {
+		nameSet := make(map[string]struct{}, len(snap.names))
+		for _, n := range snap.names {
+			nameSet[n] = struct{}{}
+		}
+		svcs := []ProxyService{}
+		for _, ps := range wa.config.ProxyServices {
+			if _, ok := nameSet[ps.Name]; ok {
+				svcs = append(svcs, ps)
+			}
+		}
+		if len(svcs) > 0 {
+			recreates = append(recreates, groupRecreate{mgr: snap.mgr, svcs: svcs})
 		}
 	}
-	clusterContext := wa.config.ClusterContext
-	namespace := wa.config.Namespace
 	wa.mu.RUnlock()
 
 	go func() {
-		if err := wa.proxyPodManager.CreatePodWithServices(selected); err != nil {
-			return
-		}
-		wa.mu.Lock()
-		defer wa.mu.Unlock()
-		for _, ps := range selected {
-			pxf := NewProxyForward(ps, wa.proxyPodManager, clusterContext, namespace)
-			_ = pxf.Start()
-			wa.proxyForwards[ps.Name] = pxf
+		for _, rec := range recreates {
+			if err := rec.mgr.CreatePodWithServices(rec.svcs); err != nil {
+				continue
+			}
+			wa.mu.Lock()
+			for _, ps := range rec.svcs {
+				pxf := NewProxyForward(ps, rec.mgr)
+				_ = pxf.Start()
+				wa.proxyForwards[ps.Name] = pxf
+			}
+			wa.mu.Unlock()
 		}
 	}()
 
 	jsonOK(w, map[string]string{"status": "resetting"})
+}
+
+// handleKillProxyPod stops forwards for a specific group and deletes that pod.
+func (wa *WebApp) handleKillProxyPod(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		GroupKey string `json:"group_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.GroupKey == "" {
+		jsonError(w, "invalid body: group_key required", http.StatusBadRequest)
+		return
+	}
+
+	wa.mu.Lock()
+	mgr, ok := wa.proxyPodManagers[body.GroupKey]
+	if !ok {
+		wa.mu.Unlock()
+		jsonError(w, "group not found", http.StatusNotFound)
+		return
+	}
+
+	// Stop all proxy forwards belonging to this group
+	for name, pxf := range wa.proxyForwards {
+		if pxf.ProxyService.ProxyGroupKey() == body.GroupKey {
+			pxf.Stop()
+			delete(wa.proxyForwards, name)
+		}
+	}
+	wa.mu.Unlock()
+
+	// Delete pod outside lock (blocking kubectl call)
+	mgr.DeletePod()
+
+	jsonOK(w, map[string]string{"status": "killed"})
 }
 
 // handleGetPresets returns configured presets.
@@ -677,12 +828,7 @@ func (wa *WebApp) handleSwitchContext(w http.ResponseWriter, r *http.Request) {
 	for i, svc := range newConfig.Services {
 		wa.portForwards[i] = NewPortForward(svc, newConfig.ClusterContext, newConfig.Namespace, newConfig.MaxRetries)
 	}
-	if len(newConfig.ProxyServices) > 0 {
-		wa.proxyPodManager = NewProxyPodManager(
-			newConfig.ProxyPodName, newConfig.ProxyPodImage,
-			newConfig.ProxyPodNamespace, newConfig.ProxyPodContext,
-		)
-	}
+	wa.proxyPodManagers = buildProxyPodManagers(newConfig)
 	wa.proxyForwards = make(map[string]*ProxyForward)
 	wa.mu.Unlock()
 
@@ -813,14 +959,7 @@ func (wa *WebApp) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 	for i, svc := range newConfig.Services {
 		wa.portForwards[i] = NewPortForward(svc, newConfig.ClusterContext, newConfig.Namespace, newConfig.MaxRetries)
 	}
-	if len(newConfig.ProxyServices) > 0 {
-		wa.proxyPodManager = NewProxyPodManager(
-			newConfig.ProxyPodName, newConfig.ProxyPodImage,
-			newConfig.ProxyPodNamespace, newConfig.ProxyPodContext,
-		)
-	} else {
-		wa.proxyPodManager = nil
-	}
+	wa.proxyPodManagers = buildProxyPodManagers(newConfig)
 	wa.proxyForwards = make(map[string]*ProxyForward)
 	wa.mu.Unlock()
 

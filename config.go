@@ -60,29 +60,13 @@ type ProxyService struct {
 	TargetPort         int    `yaml:"target_port"`
 	LocalPort          int    `yaml:"local_port"`
 	SelectedByDefault  bool   `yaml:"selected_by_default"`
-	Context            string `yaml:"context,omitempty"`             // Optional: override cluster context
-	Namespace          string `yaml:"namespace,omitempty"`           // Optional: override namespace
+	ProxyPodContext    string `yaml:"proxy_pod_context"`             // Required: context where proxy pod is created
+	ProxyPodNamespace  string `yaml:"proxy_pod_namespace"`           // Required: namespace where proxy pod is created
 	MaxRetries         *int   `yaml:"max_retries,omitempty"`         // Optional: override global max_retries
 	SqlTapPort         *int   `yaml:"sql_tap_port,omitempty"`        // Optional: port for sql-tap proxy
 	SqlTapDriver       string `yaml:"sql_tap_driver,omitempty"`      // Optional: driver (postgres or mysql)
 	SqlTapGrpcPort     *int   `yaml:"sql_tap_grpc_port,omitempty"`   // Optional: gRPC port for sql-tap client (default: auto-assigned)
 	SqlTapHttpPort     *int   `yaml:"sql_tap_http_port,omitempty"`   // Optional: port for sql-tap browser-based web interface
-}
-
-// GetContext returns the service-specific context or falls back to global context
-func (ps *ProxyService) GetContext(globalContext string) string {
-	if ps.Context != "" {
-		return ps.Context
-	}
-	return globalContext
-}
-
-// GetNamespace returns the service-specific namespace or falls back to global namespace
-func (ps *ProxyService) GetNamespace(globalNamespace string) string {
-	if ps.Namespace != "" {
-		return ps.Namespace
-	}
-	return globalNamespace
 }
 
 // GetMaxRetries returns the service-specific max retries or falls back to global max retries
@@ -91,6 +75,11 @@ func (ps *ProxyService) GetMaxRetries(globalMaxRetries int) int {
 		return *ps.MaxRetries
 	}
 	return globalMaxRetries
+}
+
+// ProxyGroupKey returns the unique key for the context+namespace group this service belongs to
+func (ps *ProxyService) ProxyGroupKey() string {
+	return ps.ProxyPodContext + "/" + ps.ProxyPodNamespace
 }
 
 // GetContext returns the service-specific context or falls back to global context
@@ -146,11 +135,23 @@ func LoadConfig(filepath string) (*Config, error) {
 	if config.ProxyPodImage == "" {
 		config.ProxyPodImage = "alpine/socat:latest"
 	}
+	// Global ProxyPodContext/ProxyPodNamespace serve as defaults for services
+	// that don't specify their own (backward compatibility).
 	if config.ProxyPodContext == "" {
 		config.ProxyPodContext = config.ClusterContext
 	}
 	if config.ProxyPodNamespace == "" {
 		config.ProxyPodNamespace = config.Namespace
+	}
+
+	// Apply global proxy pod defaults to services that don't specify their own
+	for i := range config.ProxyServices {
+		if config.ProxyServices[i].ProxyPodContext == "" {
+			config.ProxyServices[i].ProxyPodContext = config.ProxyPodContext
+		}
+		if config.ProxyServices[i].ProxyPodNamespace == "" {
+			config.ProxyServices[i].ProxyPodNamespace = config.ProxyPodNamespace
+		}
 	}
 
 	// Validate configuration
@@ -227,6 +228,12 @@ func LoadConfig(filepath string) (*Config, error) {
 		if pxSvc.LocalPort <= 0 || pxSvc.LocalPort > 65535 {
 			return nil, fmt.Errorf("proxy_service %d (%s): invalid local_port", i, pxSvc.Name)
 		}
+		if pxSvc.ProxyPodContext == "" {
+			return nil, fmt.Errorf("proxy_service %d (%s): proxy_pod_context is required", i, pxSvc.Name)
+		}
+		if pxSvc.ProxyPodNamespace == "" {
+			return nil, fmt.Errorf("proxy_service %d (%s): proxy_pod_namespace is required", i, pxSvc.Name)
+		}
 		// Validate sql-tap configuration
 		if pxSvc.SqlTapPort != nil {
 			if *pxSvc.SqlTapPort <= 0 || *pxSvc.SqlTapPort > 65535 {
@@ -267,8 +274,13 @@ func LoadConfig(filepath string) (*Config, error) {
 		return config.Services[i].Name < config.Services[j].Name
 	})
 
-	// Sort proxy services alphabetically by name
+	// Sort proxy services by (proxy_pod_context, proxy_pod_namespace, name) for stable grouping
 	sort.Slice(config.ProxyServices, func(i, j int) bool {
+		ki := config.ProxyServices[i].ProxyGroupKey()
+		kj := config.ProxyServices[j].ProxyGroupKey()
+		if ki != kj {
+			return ki < kj
+		}
 		return config.ProxyServices[i].Name < config.ProxyServices[j].Name
 	})
 
