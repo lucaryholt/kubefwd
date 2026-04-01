@@ -291,7 +291,7 @@ func (wa *WebApp) buildStateJSON() string {
 				status = string(st)
 				errMsg = e
 			}
-			active := mgr != nil && mgr.IsServiceActive(ps.Name)
+			_, active := wa.proxyForwards[ps.Name]
 			entry := proxyServiceStateJSON{
 				Name:              ps.Name,
 				LocalPort:         ps.LocalPort,
@@ -377,7 +377,10 @@ func (wa *WebApp) ListenAndServe(port int) error {
 
 	// Proxy services
 	mux.HandleFunc("GET /api/proxy-services", wa.handleGetProxyServices)
-	mux.HandleFunc("POST /api/proxy-services/apply", wa.handleApplyProxyServices)
+	mux.HandleFunc("POST /api/proxy-services/start-pod", wa.handleStartProxyPod)
+	mux.HandleFunc("POST /api/proxy-services/start-defaults", wa.handleStartDefaultProxies)
+	mux.HandleFunc("POST /api/proxy-services/{name}/start", wa.handleStartProxyService)
+	mux.HandleFunc("POST /api/proxy-services/{name}/stop", wa.handleStopProxyService)
 	mux.HandleFunc("POST /api/proxy-services/reset", wa.handleResetProxyPod)
 	mux.HandleFunc("POST /api/proxy-services/kill-pod", wa.handleKillProxyPod)
 
@@ -538,67 +541,110 @@ func (wa *WebApp) handleGetProxyServices(w http.ResponseWriter, r *http.Request)
 	jsonOK(w, json.RawMessage(wa.buildStateJSON()))
 }
 
-// handleApplyProxyServices applies a new proxy service selection.
-func (wa *WebApp) handleApplyProxyServices(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Names []string `json:"names"`
+// allServicesForGroup returns all ProxyServices belonging to the given group key.
+func (wa *WebApp) allServicesForGroup(groupKey string) []ProxyService {
+	var svcs []ProxyService
+	for _, ps := range wa.config.ProxyServices {
+		if ps.ProxyGroupKey() == groupKey {
+			svcs = append(svcs, ps)
+		}
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, "invalid body", http.StatusBadRequest)
+	return svcs
+}
+
+// stopForwardsForGroup stops and removes all active proxy forwards for a group.
+// Must be called with wa.mu held.
+func (wa *WebApp) stopForwardsForGroup(groupKey string) {
+	for name, pxf := range wa.proxyForwards {
+		if pxf.ProxyService.ProxyGroupKey() == groupKey {
+			pxf.Stop()
+			delete(wa.proxyForwards, name)
+		}
+	}
+}
+
+// handleStartProxyPod creates the proxy pod for a group with socat for all
+// services in that group, but starts no port-forwards.
+func (wa *WebApp) handleStartProxyPod(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		GroupKey string `json:"group_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.GroupKey == "" {
+		jsonError(w, "invalid body: group_key required", http.StatusBadRequest)
 		return
 	}
 
+	wa.mu.RLock()
+	mgr, ok := wa.proxyPodManagers[body.GroupKey]
+	wa.mu.RUnlock()
+	if !ok {
+		jsonError(w, "group not found", http.StatusNotFound)
+		return
+	}
+
+	allSvcs := wa.allServicesForGroup(body.GroupKey)
+	if len(allSvcs) == 0 {
+		jsonError(w, "no services in group", http.StatusBadRequest)
+		return
+	}
+
+	// Stop any existing forwards for this group
+	wa.mu.Lock()
+	wa.stopForwardsForGroup(body.GroupKey)
+	wa.mu.Unlock()
+
+	go func() {
+		_ = mgr.CreatePodWithServices(allSvcs)
+	}()
+
+	jsonOK(w, map[string]string{"status": "starting"})
+}
+
+// handleStartDefaultProxies creates all pods and starts port-forwards for
+// every is_default=true proxy service across all groups.
+func (wa *WebApp) handleStartDefaultProxies(w http.ResponseWriter, r *http.Request) {
 	if len(wa.proxyPodManagers) == 0 {
 		jsonError(w, "no proxy services configured", http.StatusBadRequest)
 		return
 	}
 
-	// Build selected service set and group by context+namespace
-	nameSet := make(map[string]struct{}, len(body.Names))
-	for _, n := range body.Names {
-		nameSet[n] = struct{}{}
+	// Build a map of all services per group, and defaults per group
+	type groupWork struct {
+		mgr      *ProxyPodManager
+		allSvcs  []ProxyService
+		defSvcs  []ProxyService
 	}
-
-	selectedByGroup := make(map[string][]ProxyService)
-	for _, ps := range wa.config.ProxyServices {
-		key := ps.ProxyGroupKey()
-		if _, ok := nameSet[ps.Name]; ok {
-			selectedByGroup[key] = append(selectedByGroup[key], ps)
+	works := make([]groupWork, 0, len(wa.proxyPodManagers))
+	for key, mgr := range wa.proxyPodManagers {
+		var allSvcs, defSvcs []ProxyService
+		for _, ps := range wa.config.ProxyServices {
+			if ps.ProxyGroupKey() == key {
+				allSvcs = append(allSvcs, ps)
+				if ps.SelectedByDefault {
+					defSvcs = append(defSvcs, ps)
+				}
+			}
+		}
+		if len(allSvcs) > 0 {
+			works = append(works, groupWork{mgr: mgr, allSvcs: allSvcs, defSvcs: defSvcs})
 		}
 	}
 
-	wa.mu.Lock()
 	// Stop all existing proxy forwards
+	wa.mu.Lock()
 	for _, pxf := range wa.proxyForwards {
 		pxf.Stop()
 	}
 	wa.proxyForwards = make(map[string]*ProxyForward)
-	managers := wa.proxyPodManagers
 	wa.mu.Unlock()
-
-	// For each known group, handle pod creation or deletion concurrently
-	type groupWork struct {
-		key  string
-		svcs []ProxyService
-		mgr  *ProxyPodManager
-	}
-	works := make([]groupWork, 0, len(managers))
-	for key, mgr := range managers {
-		svcs := selectedByGroup[key] // may be nil/empty
-		works = append(works, groupWork{key: key, svcs: svcs, mgr: mgr})
-	}
 
 	go func() {
 		for _, w := range works {
-			if len(w.svcs) == 0 {
-				w.mgr.DeletePod()
-				continue
-			}
-			if err := w.mgr.CreatePodWithServices(w.svcs); err != nil {
+			if err := w.mgr.CreatePodWithServices(w.allSvcs); err != nil {
 				continue
 			}
 			wa.mu.Lock()
-			for _, ps := range w.svcs {
+			for _, ps := range w.defSvcs {
 				pxf := NewProxyForward(ps, w.mgr)
 				_ = pxf.Start()
 				wa.proxyForwards[ps.Name] = pxf
@@ -607,11 +653,75 @@ func (wa *WebApp) handleApplyProxyServices(w http.ResponseWriter, r *http.Reques
 		}
 	}()
 
-	jsonOK(w, map[string]string{"status": "applying"})
+	jsonOK(w, map[string]string{"status": "starting"})
+}
+
+// handleStartProxyService starts the port-forward for a single proxy service.
+// The proxy pod for that service's group must already be running.
+func (wa *WebApp) handleStartProxyService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	var ps *ProxyService
+	for i := range wa.config.ProxyServices {
+		if wa.config.ProxyServices[i].Name == name {
+			ps = &wa.config.ProxyServices[i]
+			break
+		}
+	}
+	if ps == nil {
+		jsonError(w, "proxy service not found", http.StatusNotFound)
+		return
+	}
+
+	wa.mu.RLock()
+	mgr, ok := wa.proxyPodManagers[ps.ProxyGroupKey()]
+	_, alreadyRunning := wa.proxyForwards[name]
+	wa.mu.RUnlock()
+
+	if !ok {
+		jsonError(w, "group not found", http.StatusNotFound)
+		return
+	}
+	if alreadyRunning {
+		jsonOK(w, map[string]string{"status": "already running"})
+		return
+	}
+
+	pxf := NewProxyForward(*ps, mgr)
+	go func() {
+		_ = pxf.Start()
+	}()
+
+	wa.mu.Lock()
+	wa.proxyForwards[name] = pxf
+	wa.mu.Unlock()
+
+	jsonOK(w, map[string]string{"status": "starting"})
+}
+
+// handleStopProxyService stops the port-forward for a single proxy service.
+func (wa *WebApp) handleStopProxyService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	wa.mu.Lock()
+	pxf, ok := wa.proxyForwards[name]
+	if ok {
+		delete(wa.proxyForwards, name)
+	}
+	wa.mu.Unlock()
+
+	if !ok {
+		jsonOK(w, map[string]string{"status": "not running"})
+		return
+	}
+
+	pxf.Stop()
+	jsonOK(w, map[string]string{"status": "stopped"})
 }
 
 // handleResetProxyPod stops all proxy forwards, deletes all pods, then recreates
-// them with the same set of previously active services.
+// them. Each pod gets all group services for socat; port-forwards are restored
+// only for the services that had active forwards before the reset.
 func (wa *WebApp) handleResetProxyPod(w http.ResponseWriter, r *http.Request) {
 	if len(wa.proxyPodManagers) == 0 {
 		jsonError(w, "no proxy services configured", http.StatusBadRequest)
@@ -619,17 +729,21 @@ func (wa *WebApp) handleResetProxyPod(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wa.mu.Lock()
-	// Capture active service names per group
+	// Snapshot which services had active port-forwards, grouped by group key
 	type groupSnapshot struct {
-		mgr   *ProxyPodManager
-		names []string
+		mgr          *ProxyPodManager
+		activeNames  map[string]struct{}
 	}
 	snapshots := make([]groupSnapshot, 0, len(wa.proxyPodManagers))
-	for _, mgr := range wa.proxyPodManagers {
-		snapshots = append(snapshots, groupSnapshot{
-			mgr:   mgr,
-			names: mgr.GetActiveServiceNames(),
-		})
+	for key, mgr := range wa.proxyPodManagers {
+		active := make(map[string]struct{})
+		for name, pxf := range wa.proxyForwards {
+			if pxf.ProxyService.ProxyGroupKey() == key {
+				active[name] = struct{}{}
+				_ = name
+			}
+		}
+		snapshots = append(snapshots, groupSnapshot{mgr: mgr, activeNames: active})
 	}
 	// Stop all proxy forwards
 	for _, pxf := range wa.proxyForwards {
@@ -643,50 +757,54 @@ func (wa *WebApp) handleResetProxyPod(w http.ResponseWriter, r *http.Request) {
 		snap.mgr.DeletePod()
 	}
 
-	// Check if anything was active
-	hasActive := false
-	for _, snap := range snapshots {
-		if len(snap.names) > 0 {
-			hasActive = true
-			break
-		}
-	}
-	if !hasActive {
-		jsonOK(w, map[string]string{"status": "reset"})
-		return
-	}
-
-	// Rebuild selected services per group from config
-	wa.mu.RLock()
+	// Rebuild: each pod gets all services for socat; port-forwards only for previously active ones
 	type groupRecreate struct {
-		mgr  *ProxyPodManager
-		svcs []ProxyService
+		mgr      *ProxyPodManager
+		allSvcs  []ProxyService
+		fwdSvcs  []ProxyService
 	}
+	wa.mu.RLock()
 	recreates := make([]groupRecreate, 0, len(snapshots))
-	for _, snap := range snapshots {
-		nameSet := make(map[string]struct{}, len(snap.names))
-		for _, n := range snap.names {
-			nameSet[n] = struct{}{}
-		}
-		svcs := []ProxyService{}
-		for _, ps := range wa.config.ProxyServices {
-			if _, ok := nameSet[ps.Name]; ok {
-				svcs = append(svcs, ps)
+	for key, snap := range func() map[string]groupSnapshot {
+		m := make(map[string]groupSnapshot, len(snapshots))
+		for key, mgr := range wa.proxyPodManagers {
+			for _, s := range snapshots {
+				if s.mgr == mgr {
+					m[key] = s
+					break
+				}
 			}
 		}
-		if len(svcs) > 0 {
-			recreates = append(recreates, groupRecreate{mgr: snap.mgr, svcs: svcs})
+		return m
+	}() {
+		var allSvcs, fwdSvcs []ProxyService
+		for _, ps := range wa.config.ProxyServices {
+			if ps.ProxyGroupKey() != key {
+				continue
+			}
+			allSvcs = append(allSvcs, ps)
+			if _, ok := snap.activeNames[ps.Name]; ok {
+				fwdSvcs = append(fwdSvcs, ps)
+			}
+		}
+		if len(allSvcs) > 0 {
+			recreates = append(recreates, groupRecreate{mgr: snap.mgr, allSvcs: allSvcs, fwdSvcs: fwdSvcs})
 		}
 	}
 	wa.mu.RUnlock()
 
+	if len(recreates) == 0 {
+		jsonOK(w, map[string]string{"status": "reset"})
+		return
+	}
+
 	go func() {
 		for _, rec := range recreates {
-			if err := rec.mgr.CreatePodWithServices(rec.svcs); err != nil {
+			if err := rec.mgr.CreatePodWithServices(rec.allSvcs); err != nil {
 				continue
 			}
 			wa.mu.Lock()
-			for _, ps := range rec.svcs {
+			for _, ps := range rec.fwdSvcs {
 				pxf := NewProxyForward(ps, rec.mgr)
 				_ = pxf.Start()
 				wa.proxyForwards[ps.Name] = pxf

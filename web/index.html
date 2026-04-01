@@ -282,31 +282,12 @@
   }
   .proxy-group-actions { display: flex; gap: 4px; flex-shrink: 0; }
   .proxy-group-body { padding: 4px 0; }
-  .proxy-list { display: flex; flex-direction: column; gap: 4px; }
-  .proxy-row {
-    border: 1px solid transparent;
-    border-radius: 5px;
-    transition: background .1s;
-  }
-  .proxy-row:hover { background: rgba(255,255,255,.04); border-color: var(--border); }
-  .proxy-row-main {
-    display: flex; align-items: center; gap: 10px;
-    padding: 7px 10px;
-    cursor: pointer;
-  }
-  .proxy-row input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent); flex-shrink: 0; }
-  .proxy-name { font-weight: 500; }
-  .proxy-port { font-size: 11px; color: var(--muted); margin-left: auto; }
-  .pending-banner {
-    display: flex; align-items: center; gap: 10px;
-    background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3);
-    border-radius: 6px; padding: 8px 14px;
-    margin-top: 12px; font-size: 12px; color: var(--amber);
-  }
+  .proxy-list { display: flex; flex-direction: column; gap: 2px; }
 
   /* ── SQL-tap info panel ── */
   .sqltap-info {
-    margin: 0 10px 6px 34px;
+    grid-column: 1 / -1;
+    margin: 0 0 4px 28px;
     background: rgba(210,153,34,.06);
     border: 1px solid rgba(210,153,34,.2);
     border-radius: 5px;
@@ -571,16 +552,11 @@
         <div class="proxy-card-header">
           <h3>Proxy Pods</h3>
           <div class="proxy-card-actions">
-            <button class="amber" onclick="selectDefaultProxies()">★ Select Defaults</button>
+            <button class="success" onclick="startAllDefaults()">▶ Start Defaults</button>
             <button class="danger" onclick="confirmResetPod()">↺ Reset All Pods</button>
           </div>
         </div>
         <div id="proxy-groups"></div>
-        <div class="pending-banner" id="pending-banner" style="display:none">
-          <span>⚠ Pending changes</span>
-          <button style="margin-left:auto" onclick="applyProxy()">Apply</button>
-          <button onclick="discardProxy()">Discard</button>
-        </div>
       </div>
     </div>
 
@@ -661,9 +637,6 @@
 // ── State ──────────────────────────────────────────────
 let state = null;
 let lastStateJSON = '';
-
-// pending proxy selection: map of name -> bool; null = in sync with server
-let pendingProxy = null;
 
 // expanded sql-tap info panels on proxy page: set of service names
 let expandedSqlTap = new Set();
@@ -814,17 +787,8 @@ function launchSqlTap(name) {
 // ── Proxy pane ────────────────────────────────────────
 function renderProxy() {
   const groups = state.proxy_groups || [];
-
-  // Sync pendingProxy from server state when it hasn't diverged yet
-  if (pendingProxy === null) {
-    pendingProxy = {};
-    groups.forEach(g => g.services.forEach(p => { pendingProxy[p.name] = p.active; }));
-  }
-
   const container = document.getElementById('proxy-groups');
   container.innerHTML = groups.map(g => proxyGroupHTML(g)).join('');
-
-  updatePendingBanner();
 }
 
 function proxyGroupHTML(g) {
@@ -837,6 +801,7 @@ function proxyGroupHTML(g) {
 
   const canKill = podSt !== 'not_created';
   const killBtn = `<button class="danger" ${canKill ? '' : 'disabled'} onclick="killProxyPod('${esc(g.group_key)}')" title="Delete pod for this group">✕ Kill Pod</button>`;
+  const startPodBtn = `<button onclick="startPod('${esc(g.group_key)}')">▶ Start Pod</button>`;
 
   const rows = (g.services || []).map(p => proxyServiceRow(p)).join('');
 
@@ -850,7 +815,7 @@ function proxyGroupHTML(g) {
         <span class="status-dot ${dotClass}" style="width:7px;height:7px;flex-shrink:0"></span>
         <span title="${esc(podTitle)}">${podLabel}</span>
       </div>
-      <div class="proxy-group-actions">${killBtn}</div>
+      <div class="proxy-group-actions">${startPodBtn}${killBtn}</div>
     </div>
     <div class="proxy-group-body">
       <div class="proxy-list">${rows}</div>
@@ -859,13 +824,27 @@ function proxyGroupHTML(g) {
 }
 
 function proxyServiceRow(p) {
-  const checked = pendingProxy[p.name] ? 'checked' : '';
-  const statusDot = p.active
-    ? `<span class="status-dot ${p.status === 'running' ? 'running' : p.status === 'starting' ? 'starting' : ''}" style="width:6px;height:6px;flex-shrink:0"></span>`
-    : '<span class="status-dot" style="width:6px;height:6px;flex-shrink:0"></span>';
+  const dotClass = p.active
+    ? (p.status === 'running' ? 'running' : p.status === 'starting' ? 'starting' : '')
+    : '';
+  const rowClass = dotClass;
+
+  const defaultBadge = p.is_default ? '<span class="badge-default">default</span>' : '';
+
+  const isActive = p.active;
+  const stopBtn = isActive
+    ? `<button class="danger" onclick="event.stopPropagation();proxyStop('${esc(p.name)}')">■ Stop</button>`
+    : `<button class="success" onclick="event.stopPropagation();proxyStart('${esc(p.name)}')">▶ Start</button>`;
 
   const sqltapInfoBtn = p.has_sql_tap
     ? `<button class="icon amber" onclick="event.stopPropagation();toggleSqlTapInfo('${esc(p.name)}')" title="SQL-tap info">ℹ sql-tap</button>`
+    : '';
+
+  const sqlTapLaunchBtn = p.has_sql_tap && p.status === 'running'
+    ? `<button class="icon" onclick="event.stopPropagation();launchSqlTap('${esc(p.name)}')">sql-tap</button>` : '';
+
+  const sqlTapWebBtn = p.has_sql_tap && p.sql_tap_http_port > 0 && p.status === 'running'
+    ? `<a class="icon" href="http://localhost:${p.sql_tap_http_port}" target="_blank" rel="noopener" onclick="event.stopPropagation()">↗ web</a>`
     : '';
 
   const expanded = expandedSqlTap.has(p.name);
@@ -879,26 +858,26 @@ function proxyServiceRow(p) {
       ${p.sql_tap_http_port > 0 ? `<a class="sqltap-cmd" href="http://localhost:${p.sql_tap_http_port}" target="_blank" rel="noopener" style="display:block;margin-top:4px;text-decoration:none">↗ Open web interface</a>` : ''}
     </div>` : '';
 
-  return `<div class="proxy-row">
-    <label class="proxy-row-main" onclick="proxyRowClick(event, '${esc(p.name)}')">
-      <input type="checkbox" ${checked} onchange="proxyToggle('${esc(p.name)}', this.checked)" onclick="event.stopPropagation()">
-      ${statusDot}
-      <span class="proxy-name">${esc(p.name)}</span>
-      <span class="proxy-port">:${p.local_port}</span>
-      ${sqltapInfoBtn}
-    </label>
-    ${infoPanel}
-  </div>`;
-}
-
-function proxyRowClick(event, name) {
-  // Only toggle checkbox if click wasn't on a button or the checkbox itself
-  if (event.target.tagName === 'BUTTON' || event.target.tagName === 'INPUT') return;
-  const checkbox = event.currentTarget.querySelector('input[type=checkbox]');
-  if (checkbox) {
-    checkbox.checked = !checkbox.checked;
-    proxyToggle(name, checkbox.checked);
-  }
+  return `
+    <div class="service-row ${rowClass}" onclick="proxyRowToggle('${esc(p.name)}', ${isActive})">
+      <span class="status-dot ${dotClass}"></span>
+      <div class="svc-info">
+        <div class="svc-name">
+          <span class="svc-name-text">${esc(p.name)}</span>
+          ${defaultBadge}
+        </div>
+        <div class="svc-meta">
+          <span class="port-tag local">:${p.local_port}</span>
+        </div>
+      </div>
+      <div class="svc-actions">
+        ${sqlTapWebBtn}
+        ${sqlTapLaunchBtn}
+        ${sqltapInfoBtn}
+        ${stopBtn}
+      </div>
+      ${infoPanel}
+    </div>`;
 }
 
 function toggleSqlTapInfo(name) {
@@ -907,13 +886,6 @@ function toggleSqlTapInfo(name) {
   } else {
     expandedSqlTap.add(name);
   }
-  renderProxy();
-}
-
-function selectDefaultProxies() {
-  if (!pendingProxy) pendingProxy = {};
-  const groups = state.proxy_groups || [];
-  groups.forEach(g => g.services.forEach(p => { pendingProxy[p.name] = p.is_default; }));
   renderProxy();
 }
 
@@ -926,44 +898,33 @@ function confirmResetPod() {
 function killProxyPod(groupKey) {
   confirm2('Kill proxy pod for this group?',
     'The pod will be deleted and all port-forwards for services in this group will be stopped.',
-    () => {
-      // Reset pending state for services in this group to false
-      const groups = state.proxy_groups || [];
-      const grp = groups.find(g => g.group_key === groupKey);
-      if (grp && pendingProxy) {
-        grp.services.forEach(p => { pendingProxy[p.name] = false; });
-      }
-      api('POST', '/api/proxy-services/kill-pod', { group_key: groupKey }, 'Pod killed');
-    });
+    () => api('POST', '/api/proxy-services/kill-pod', { group_key: groupKey }, 'Pod killed'));
 }
 
-function proxyToggle(name, checked) {
-  if (pendingProxy === null) pendingProxy = {};
-  pendingProxy[name] = checked;
-  updatePendingBanner();
+function proxyRowToggle(name, isActive) {
+  if (isActive) proxyStop(name); else proxyStart(name);
 }
 
-function updatePendingBanner() {
-  const groups = state.proxy_groups || [];
-  let diverged = false;
-  groups.forEach(g => g.services.forEach(p => {
-    if ((pendingProxy[p.name] || false) !== p.active) diverged = true;
-  }));
-  document.getElementById('pending-banner').style.display = diverged ? 'flex' : 'none';
+function proxyStart(name) {
+  api('POST', '/api/proxy-services/' + encodeURIComponent(name) + '/start');
 }
 
-async function applyProxy() {
-  const names = Object.entries(pendingProxy)
-    .filter(([, v]) => v).map(([k]) => k);
+function proxyStop(name) {
+  api('POST', '/api/proxy-services/' + encodeURIComponent(name) + '/stop');
+}
 
-  // Collect local ports for the selected services
+function startPod(groupKey) {
+  api('POST', '/api/proxy-services/start-pod', { group_key: groupKey }, 'Pod starting…');
+}
+
+async function startAllDefaults() {
+  // Collect local ports for all default services across all groups
   const selectedPorts = new Set();
   const groups = state.proxy_groups || [];
   groups.forEach(g => g.services.forEach(p => {
-    if (names.includes(p.name)) selectedPorts.add(p.local_port);
+    if (p.is_default) selectedPorts.add(p.local_port);
   }));
 
-  // Check for port conflicts
   let conflicts = [];
   try {
     const res = await fetch('/api/ports');
@@ -973,13 +934,7 @@ async function applyProxy() {
     }
   } catch (_) { /* ignore port check errors */ }
 
-  const doApply = () => {
-    api('POST', '/api/proxy-services/apply', { names });
-    // Keep pendingProxy as-is so the user's selection stays visible while pods
-    // are starting. The pending banner will hide once the server's active state
-    // matches the selection (all pods ready). Setting it to null here would
-    // cause re-sync from a partially-ready server and lose multi-context selections.
-  };
+  const doStart = () => api('POST', '/api/proxy-services/start-defaults', null, 'Starting default proxy services…');
 
   if (conflicts.length > 0) {
     const portList = conflicts.map(p => `:${p.port} (${p.process || 'PID ' + p.pid})`).join(', ');
@@ -990,18 +945,13 @@ async function applyProxy() {
         for (const p of conflicts) {
           try { await fetch('/api/ports/' + p.port + '/kill', { method: 'POST' }); } catch (_) {}
         }
-        doApply();
+        doStart();
       }
     );
     return;
   }
 
-  doApply();
-}
-
-function discardProxy() {
-  pendingProxy = null;
-  renderProxy();
+  doStart();
 }
 
 // ── Port Checker pane ─────────────────────────────────
