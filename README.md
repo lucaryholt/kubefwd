@@ -16,7 +16,7 @@ A web-based tool for managing Kubernetes port forwards to GKE services and proxy
 - SQL traffic monitoring via [sql-tap](https://github.com/mickamy/sql-tap)
 - **Explore tab**: discover Kubernetes services and GCP resources (Cloud SQL, Memorystore) and add them to your config with one click
 - **YAML file** or **SQLite** configuration (normalized relational schema in the database)
-- Add or remove normal and proxy services from the web UI (persisted to the active store)
+- Add, edit, or remove normal and proxy services from the web UI (persisted to the active store)
 - Import a full YAML config from the Config tab (or seed SQLite via CLI)
 - Live status updates via Server-Sent Events (no polling)
 - Debug mode to troubleshoot kubectl commands
@@ -257,6 +257,7 @@ Displays all configured port forwards with live status indicators:
 - **Status dot colours**: green = running, amber (pulsing) = starting, red = error, grey = stopped
 - **Click any row** to toggle that service on/off, or use the dedicated Start/Stop button on the right
 - **Toolbar buttons**: Start Defaults, Start All, Stop All, **＋ Add service** (form to append a service to the saved configuration)
+- **✎** on a row opens an edit modal to modify the service's config (name, ports, context/namespace overrides, default flag) — changes are saved and the service is reloaded
 - **✕** on a row removes that service from the saved configuration (with confirmation)
 - **Running count** shown in the toolbar right area
 - Services in retry mode show the attempt counter (e.g. `↻ 2/5` or `↻ 3/∞`)
@@ -269,7 +270,7 @@ Always available. When there are no proxy services yet, the tab explains how to 
 - **＋ Add proxy service**: form to add a proxy entry (target host/port, local port, proxy pod context/namespace)
 - **▶ Start Defaults** / **↺ Reset All Pods** in the header for bulk actions
 - Proxy services are grouped by **proxy pod context + namespace**; each group shows **pod status**, **▶ Start Pod**, and **✕ Kill Pod**
-- Per-row **▶ Start** / **■ Stop** for the port-forward, **✕** to remove the entry from the saved configuration
+- Per-row **▶ Start** / **■ Stop** for the port-forward, **✎** to edit the entry (name, target host/port, local port, proxy pod context/namespace, default flag), **✕** to remove the entry from the saved configuration
 - **ℹ sql-tap** (when configured): expands an inline panel with ports and `sql-tap localhost:<grpc_port>`
 
 ### Port Checker tab
