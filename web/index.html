@@ -935,6 +935,30 @@
   </div>
 </div>
 
+<!-- Edit service/proxy modal -->
+<div class="overlay" id="edit-overlay">
+  <div class="modal" style="min-width:480px;max-width:600px">
+    <h3 id="edit-title">Edit Service</h3>
+    <div class="form-grid" style="margin-top:12px">
+      <label>Display name <input type="text" id="ed-name" /></label>
+      <label id="ed-svcname-lbl">K8s service name <input type="text" id="ed-svcname" /></label>
+      <label id="ed-remote-lbl">Remote port <input type="number" id="ed-remote" min="1" max="65535" /></label>
+      <label id="ed-host-lbl">Target host <input type="text" id="ed-host" /></label>
+      <label id="ed-tport-lbl">Target port <input type="number" id="ed-tport" min="1" max="65535" /></label>
+      <label>Local port <input type="number" id="ed-local" min="1" max="65535" /></label>
+      <label class="checkbox-row"><input type="checkbox" id="ed-def" /> Start with "Start defaults"</label>
+      <label id="ed-ctx-lbl">Context override <input type="text" id="ed-ctx" placeholder="optional" /></label>
+      <label id="ed-ns-lbl">Namespace override <input type="text" id="ed-ns" placeholder="optional" /></label>
+      <label id="ed-pctx-lbl">Proxy pod context <input type="text" id="ed-pctx" /></label>
+      <label id="ed-pns-lbl">Proxy pod namespace <input type="text" id="ed-pns" /></label>
+    </div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button onclick="closeEditModal()">Cancel</button>
+      <button class="primary" onclick="submitEdit()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Log detail modal -->
 <div id="log-detail-overlay" onclick="if(event.target===this)closeLogDetail()">
   <div id="log-detail-modal">
@@ -1074,6 +1098,7 @@ function serviceRow(s) {
         </div>
       </div>
       <div class="svc-actions">
+        <button class="icon" title="Edit service config" onclick="event.stopPropagation();editService('${esc(s.name)}')">✎</button>
         <button class="icon" title="Remove from saved config" onclick="event.stopPropagation();configDeleteService('${esc(s.name)}')">✕</button>
         ${sqlTapWebBtn}
         ${sqlTapBtn}
@@ -1188,6 +1213,7 @@ function proxyServiceRow(p) {
         </div>
       </div>
       <div class="svc-actions">
+        <button class="icon" title="Edit proxy service config" onclick="event.stopPropagation();editProxyService('${esc(p.name)}')">✎</button>
         <button class="icon" title="Remove from saved config" onclick="event.stopPropagation();configDeleteProxy('${esc(p.name)}')">✕</button>
         ${sqlTapWebBtn}
         ${sqlTapLaunchBtn}
@@ -1800,6 +1826,111 @@ function configDeleteProxy(name) {
     'Proxy forwards for this service will be stopped.',
     () => api('DELETE', '/api/config/proxy-services/' + encodeURIComponent(name), null, 'Removed'));
 }
+
+// ── Edit service/proxy modal ──────────────────────────
+let editType = null;
+let editOriginalName = null;
+
+async function editService(name) {
+  try {
+    const res = await fetch('/api/config/services/' + encodeURIComponent(name));
+    if (!res.ok) { toast('Failed to load service config', 'err'); return; }
+    const sv = await res.json();
+    editType = 'service';
+    editOriginalName = name;
+    document.getElementById('edit-title').textContent = 'Edit Service';
+    showEditFields('service');
+    document.getElementById('ed-name').value = sv.name || '';
+    document.getElementById('ed-svcname').value = sv.service_name || '';
+    document.getElementById('ed-remote').value = sv.remote_port || '';
+    document.getElementById('ed-local').value = sv.local_port || '';
+    document.getElementById('ed-def').checked = sv.selected_by_default || false;
+    document.getElementById('ed-ctx').value = sv.context || '';
+    document.getElementById('ed-ns').value = sv.namespace || '';
+    document.getElementById('edit-overlay').classList.add('show');
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+  }
+}
+
+async function editProxyService(name) {
+  try {
+    const res = await fetch('/api/config/proxy-services/' + encodeURIComponent(name));
+    if (!res.ok) { toast('Failed to load proxy service config', 'err'); return; }
+    const ps = await res.json();
+    editType = 'proxy';
+    editOriginalName = name;
+    document.getElementById('edit-title').textContent = 'Edit Proxy Service';
+    showEditFields('proxy');
+    document.getElementById('ed-name').value = ps.name || '';
+    document.getElementById('ed-host').value = ps.target_host || '';
+    document.getElementById('ed-tport').value = ps.target_port || '';
+    document.getElementById('ed-local').value = ps.local_port || '';
+    document.getElementById('ed-def').checked = ps.selected_by_default || false;
+    document.getElementById('ed-pctx').value = ps.proxy_pod_context || '';
+    document.getElementById('ed-pns').value = ps.proxy_pod_namespace || '';
+    document.getElementById('edit-overlay').classList.add('show');
+  } catch(e) {
+    toast('Error: ' + e.message, 'err');
+  }
+}
+
+function showEditFields(type) {
+  const svcFields = ['ed-svcname-lbl', 'ed-remote-lbl', 'ed-ctx-lbl', 'ed-ns-lbl'];
+  const proxyFields = ['ed-host-lbl', 'ed-tport-lbl', 'ed-pctx-lbl', 'ed-pns-lbl'];
+  svcFields.forEach(id => document.getElementById(id).style.display = type === 'service' ? '' : 'none');
+  proxyFields.forEach(id => document.getElementById(id).style.display = type === 'proxy' ? '' : 'none');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-overlay').classList.remove('show');
+  editType = null;
+  editOriginalName = null;
+}
+
+async function submitEdit() {
+  const name = document.getElementById('ed-name').value.trim();
+  if (!name) { toast('Name is required', 'err'); return; }
+
+  if (editType === 'service') {
+    const body = {
+      name,
+      service_name: document.getElementById('ed-svcname').value.trim(),
+      remote_port: parseInt(document.getElementById('ed-remote').value, 10),
+      local_port: parseInt(document.getElementById('ed-local').value, 10),
+      selected_by_default: document.getElementById('ed-def').checked,
+    };
+    const ctx = document.getElementById('ed-ctx').value.trim();
+    const ns = document.getElementById('ed-ns').value.trim();
+    if (ctx) body.context = ctx;
+    if (ns) body.namespace = ns;
+    if (!body.service_name || !body.remote_port || !body.local_port) {
+      toast('Fill service name and ports', 'err'); return;
+    }
+    await api('PUT', '/api/config/services/' + encodeURIComponent(editOriginalName),
+      body, 'Service updated', () => closeEditModal());
+  } else if (editType === 'proxy') {
+    const body = {
+      name,
+      target_host: document.getElementById('ed-host').value.trim(),
+      target_port: parseInt(document.getElementById('ed-tport').value, 10),
+      local_port: parseInt(document.getElementById('ed-local').value, 10),
+      selected_by_default: document.getElementById('ed-def').checked,
+      proxy_pod_context: document.getElementById('ed-pctx').value.trim(),
+      proxy_pod_namespace: document.getElementById('ed-pns').value.trim(),
+    };
+    if (!body.target_host || !body.target_port || !body.local_port ||
+        !body.proxy_pod_context || !body.proxy_pod_namespace) {
+      toast('Fill all required fields', 'err'); return;
+    }
+    await api('PUT', '/api/config/proxy-services/' + encodeURIComponent(editOriginalName),
+      body, 'Proxy service updated', () => closeEditModal());
+  }
+}
+
+document.getElementById('edit-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeEditModal();
+});
 
 async function importYaml() {
   const yaml = document.getElementById('import-yaml-ta').value;

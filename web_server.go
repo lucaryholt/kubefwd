@@ -435,8 +435,12 @@ func (wa *WebApp) ListenAndServe(port int) error {
 	mux.HandleFunc("POST /api/config/reload", wa.handleConfigReload)
 	mux.HandleFunc("POST /api/config/import-yaml", wa.handleConfigImportYAML)
 	mux.HandleFunc("POST /api/config/services", wa.handlePostConfigService)
+	mux.HandleFunc("GET /api/config/services/{name}", wa.handleGetConfigService)
+	mux.HandleFunc("PUT /api/config/services/{name}", wa.handlePutConfigService)
 	mux.HandleFunc("DELETE /api/config/services/{name}", wa.handleDeleteConfigService)
 	mux.HandleFunc("POST /api/config/proxy-services", wa.handlePostConfigProxyService)
+	mux.HandleFunc("GET /api/config/proxy-services/{name}", wa.handleGetConfigProxyService)
+	mux.HandleFunc("PUT /api/config/proxy-services/{name}", wa.handlePutConfigProxyService)
 	mux.HandleFunc("DELETE /api/config/proxy-services/{name}", wa.handleDeleteConfigProxyService)
 
 	addr := fmt.Sprintf(":%d", port)
@@ -1158,6 +1162,67 @@ func (wa *WebApp) handlePostConfigService(w http.ResponseWriter, r *http.Request
 	jsonOK(w, map[string]string{"status": "ok"})
 }
 
+func (wa *WebApp) handleGetConfigService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	wa.mu.RLock()
+	defer wa.mu.RUnlock()
+	for _, sv := range wa.config.Services {
+		if sv.Name == name {
+			jsonOK(w, sv)
+			return
+		}
+	}
+	jsonError(w, "service not found", http.StatusNotFound)
+}
+
+func (wa *WebApp) handlePutConfigService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var sv Service
+	if err := json.NewDecoder(r.Body).Decode(&sv); err != nil {
+		jsonError(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	cfg := wa.currentConfigClone()
+	if cfg == nil {
+		jsonError(w, "no config", http.StatusInternalServerError)
+		return
+	}
+	found := false
+	for i, x := range cfg.Services {
+		if x.Name == name {
+			if sv.Name != name {
+				for _, other := range cfg.Services {
+					if other.Name == sv.Name {
+						jsonError(w, "service name already exists", http.StatusConflict)
+						return
+					}
+				}
+			}
+			cfg.Services[i] = sv
+			found = true
+			break
+		}
+	}
+	if !found {
+		jsonError(w, "service not found", http.StatusNotFound)
+		return
+	}
+	if err := wa.store.Save(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	loaded, err := wa.store.Load()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wa.mu.RLock()
+	loaded.ClusterContext = wa.config.ClusterContext
+	wa.mu.RUnlock()
+	wa.reapplyConfig(loaded)
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
 func (wa *WebApp) handleDeleteConfigService(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	cfg := wa.currentConfigClone()
@@ -1213,6 +1278,67 @@ func (wa *WebApp) handlePostConfigProxyService(w http.ResponseWriter, r *http.Re
 		}
 	}
 	cfg.ProxyServices = append(cfg.ProxyServices, ps)
+	if err := wa.store.Save(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	loaded, err := wa.store.Load()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wa.mu.RLock()
+	loaded.ClusterContext = wa.config.ClusterContext
+	wa.mu.RUnlock()
+	wa.reapplyConfig(loaded)
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+func (wa *WebApp) handleGetConfigProxyService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	wa.mu.RLock()
+	defer wa.mu.RUnlock()
+	for _, ps := range wa.config.ProxyServices {
+		if ps.Name == name {
+			jsonOK(w, ps)
+			return
+		}
+	}
+	jsonError(w, "proxy service not found", http.StatusNotFound)
+}
+
+func (wa *WebApp) handlePutConfigProxyService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var ps ProxyService
+	if err := json.NewDecoder(r.Body).Decode(&ps); err != nil {
+		jsonError(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	cfg := wa.currentConfigClone()
+	if cfg == nil {
+		jsonError(w, "no config", http.StatusInternalServerError)
+		return
+	}
+	found := false
+	for i, x := range cfg.ProxyServices {
+		if x.Name == name {
+			if ps.Name != name {
+				for _, other := range cfg.ProxyServices {
+					if other.Name == ps.Name {
+						jsonError(w, "proxy service name already exists", http.StatusConflict)
+						return
+					}
+				}
+			}
+			cfg.ProxyServices[i] = ps
+			found = true
+			break
+		}
+	}
+	if !found {
+		jsonError(w, "proxy service not found", http.StatusNotFound)
+		return
+	}
 	if err := wa.store.Save(cfg); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
