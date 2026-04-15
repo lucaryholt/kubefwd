@@ -547,6 +547,70 @@
   #debug-log .dbg-line:nth-child(even) { color: #a8d8a8; }
   #debug-log .dbg-empty { color: var(--muted); font-style: italic; }
 
+  #debug-log .dbg-line.multiline {
+    display: flex; align-items: baseline; gap: 8px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #debug-log .dbg-line.multiline .dbg-preview {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  #debug-log .dbg-line.multiline .dbg-expand {
+    flex-shrink: 0;
+    background: rgba(88,166,255,.12);
+    border: 1px solid rgba(88,166,255,.3);
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+  #debug-log .dbg-line.multiline .dbg-expand:hover { background: rgba(88,166,255,.25); }
+
+  /* ── Log detail modal ── */
+  #log-detail-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.7); z-index: 300;
+    align-items: center; justify-content: center;
+    padding: 40px;
+  }
+  #log-detail-overlay.show { display: flex; }
+  #log-detail-modal {
+    background: #0d1117; border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex; flex-direction: column;
+    max-width: 900px; width: 100%;
+    max-height: 80vh;
+    overflow: hidden;
+  }
+  #log-detail-modal .ldm-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  #log-detail-modal .ldm-header span {
+    font-size: 11px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .5px; flex: 1;
+  }
+  #log-detail-modal .ldm-header button {
+    background: none; border: none; color: var(--muted);
+    cursor: pointer; font-family: inherit; font-size: 11px;
+    padding: 2px 6px; border-radius: 4px;
+  }
+  #log-detail-modal .ldm-header button:hover { color: var(--text); background: rgba(255,255,255,.05); }
+  #log-detail-body {
+    padding: 16px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #7ee787;
+  }
+
   /* ── Explorer ── */
   .explorer-section {
     border: 1px solid var(--border);
@@ -868,6 +932,18 @@
       <button onclick="confirmCancel()">Cancel</button>
       <button class="danger" id="confirm-ok-btn" onclick="confirmOK()">Confirm</button>
     </div>
+  </div>
+</div>
+
+<!-- Log detail modal -->
+<div id="log-detail-overlay" onclick="if(event.target===this)closeLogDetail()">
+  <div id="log-detail-modal">
+    <div class="ldm-header">
+      <span>Log Entry</span>
+      <button onclick="copyLogDetail()" title="Copy to clipboard">Copy</button>
+      <button onclick="closeLogDetail()">✕</button>
+    </div>
+    <pre id="log-detail-body"></pre>
   </div>
 </div>
 
@@ -1832,6 +1908,8 @@ function clearDebugLog() {
   document.getElementById('debug-btn').classList.remove('has-lines');
 }
 
+let _debugVisibleCache = [];
+
 function renderDebugPanel(lines) {
   lines = lines || [];
   const visible = lines.slice(clearedUpTo);
@@ -1846,10 +1924,11 @@ function renderDebugPanel(lines) {
     btn.classList.toggle('has-lines', newCount > 0);
   }
 
+  _debugVisibleCache = visible;
+
   if (!debugDrawerOpen) return;
 
   const log = document.getElementById('debug-log');
-  // Check if user is scrolled to bottom before we update
   const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 4;
 
   if (!visible.length) {
@@ -1857,9 +1936,33 @@ function renderDebugPanel(lines) {
     return;
   }
 
-  log.innerHTML = visible.map(l => `<div class="dbg-line">${esc(l)}</div>`).join('');
+  log.innerHTML = visible.map((l, i) => {
+    if (l.includes('\n')) {
+      const firstLine = l.split('\n')[0];
+      return `<div class="dbg-line multiline"><span class="dbg-preview">${esc(firstLine)}</span><button class="dbg-expand" onclick="event.stopPropagation();openLogDetail(${i})">view</button></div>`;
+    }
+    return `<div class="dbg-line">${esc(l)}</div>`;
+  }).join('');
 
   if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function openLogDetail(idx) {
+  const text = _debugVisibleCache[idx] || '';
+  document.getElementById('log-detail-body').textContent = text;
+  document.getElementById('log-detail-overlay').classList.add('show');
+}
+
+function closeLogDetail() {
+  document.getElementById('log-detail-overlay').classList.remove('show');
+}
+
+function copyLogDetail() {
+  const text = document.getElementById('log-detail-body').textContent;
+  navigator.clipboard.writeText(text).then(
+    () => toast('Copied to clipboard', 'ok'),
+    () => toast('Failed to copy', 'err')
+  );
 }
 
 // ── Debug drawer resize ────────────────────────────────
