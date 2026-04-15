@@ -14,6 +14,7 @@ A web-based tool for managing Kubernetes port forwards to GKE services and proxy
 - Automatic retry with exponential backoff when connections fail
 - Port status checker to identify and kill processes using configured ports
 - SQL traffic monitoring via [sql-tap](https://github.com/mickamy/sql-tap)
+- **Explore tab**: discover Kubernetes services and GCP resources (Cloud SQL, Memorystore) and add them to your config with one click
 - **YAML file** or **SQLite** configuration (normalized relational schema in the database)
 - Add or remove normal and proxy services from the web UI (persisted to the active store)
 - Import a full YAML config from the Config tab (or seed SQLite via CLI)
@@ -25,6 +26,7 @@ A web-based tool for managing Kubernetes port forwards to GKE services and proxy
 - Go 1.25 or later (see `go.mod`)
 - `kubectl` installed and configured
 - Access to a GKE cluster
+- `gcloud` CLI (optional — required only for GCP resource discovery in the Explore tab)
 
 ## Installation
 
@@ -246,7 +248,7 @@ nano ~/.kubefwd.yaml
 
 kubefwd serves a browser-based dashboard at `http://localhost:<web_port>` (default: `http://localhost:8765`). The port is configurable via `web_port` in your config file.
 
-The dashboard has six tabs.
+The dashboard has seven tabs.
 
 ### Services tab
 
@@ -287,6 +289,28 @@ Shown only when `presets` are configured. Click any preset card to stop all runn
 ### Contexts tab
 
 Shown only when `alternative_contexts` are configured. Click a context row to switch the active cluster context — all running services will be stopped and the context changes immediately (requires confirmation).
+
+### Explore tab
+
+Browse available Kubernetes services and GCP resources and add them to your configuration with one click. Both sections are collapsible and collapsed by default; expanding a section automatically triggers the initial data load.
+
+**Kubernetes Services** — discover services that can be port-forwarded:
+
+1. Expand the section — contexts are loaded automatically from `kubectl config get-contexts`
+2. Select a **context** (pre-selects the current kubefwd context)
+3. Select a **namespace** (pre-selects the current kubefwd namespace)
+4. Services are listed with their type (ClusterIP, NodePort, etc.) and ports
+5. Click **+ Add :port** to add a service to the config — the service name, remote port, and local port are pre-filled
+6. Services already in the config show an **added** badge instead
+
+**GCP Resources** — discover Cloud SQL and Memorystore instances (requires `gcloud` CLI):
+
+1. Expand the section — GCP projects are loaded automatically from `gcloud projects list`
+2. Select a **GCP project** (pre-selects the active gcloud project)
+3. Select a **proxy pod context** and **namespace** (these are the K8s context/namespace where the socat proxy pod will run)
+4. Click **Scan** to discover Cloud SQL and Memorystore (Redis) instances in the selected project
+5. Click **+ Add** to add an instance as a proxy service — target host (private IP), target port, and proxy pod context/namespace are pre-filled
+6. If `gcloud` is not installed, the section shows a message instead of failing
 
 ### Config tab
 
@@ -472,13 +496,13 @@ services:
 
 ## Tips
 
-1. **Find your cluster context**: `kubectl config get-contexts`
-2. **Check service names**: `kubectl get services -n <namespace>`
+1. **Find your cluster context**: `kubectl config get-contexts` (or use the Explore tab)
+2. **Check service names**: `kubectl get services -n <namespace>` (or browse them in the Explore tab)
 3. **Avoid port conflicts**: Make sure the local ports you specify aren't already in use
 4. **Test connectivity**: After starting a port forward, test with `curl localhost:<port>`
 5. **Unreliable connections**: Keep the default infinite retries for flaky networks or frequently restarting pods
 6. **Development environment**: Consider `max_retries: 3` for services that may not always be available
-7. **GCP Resources**: Use proxy services for CloudSQL, MemoryStore, and other GCP resources with private IPs
+7. **GCP Resources**: Use the Explore tab to discover CloudSQL/MemoryStore instances, or manually configure proxy services for GCP resources with private IPs
 8. **Quick Start**: Use `--default` / `--default-proxy` to auto-start common services on launch
 9. **Custom port**: Set `web_port` in your config to change the web UI port (e.g. `web_port: 9000`)
 10. **Multiple environments**: Use different YAML files (`--config`) or different SQLite files (`--db`) to manage separate clusters
@@ -544,6 +568,7 @@ kubefwd/
 ├── config.go               # Config struct, validation, YAML parse/load
 ├── config_store.go         # ConfigStore: YAML file + SQLite (normalized schema)
 ├── config_test.go          # Tests for config parsing / validation
+├── explorer.go             # K8s service & GCP resource discovery (kubectl/gcloud)
 ├── portforward.go          # kubectl port-forward process management
 ├── proxypod.go             # Proxy pod lifecycle and ProxyForward
 ├── sqltap.go               # sql-tapd process management
