@@ -357,6 +357,42 @@
     color: var(--green); border-radius: 3px; padding: 1px 6px;
   }
 
+  /* ── Add-service forms ── */
+  .add-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px 14px;
+    align-items: end;
+  }
+  .form-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .form-grid input[type="text"], .form-grid input[type="number"] {
+    font-family: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: #0d1117;
+    color: var(--text);
+  }
+  .form-grid .checkbox-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+
   /* ── Config pane ── */
   .config-info {
     background: var(--surface); border: 1px solid var(--border);
@@ -523,7 +559,7 @@
 
   <nav id="nav">
     <button class="tab active" data-pane="services">Services</button>
-    <button class="tab" data-pane="proxy" id="tab-proxy" style="display:none">Proxy</button>
+    <button class="tab" data-pane="proxy" id="tab-proxy">Proxy</button>
     <button class="tab" data-pane="ports">Port Checker</button>
     <button class="tab" data-pane="presets" id="tab-presets" style="display:none">Presets</button>
     <button class="tab" data-pane="contexts" id="tab-contexts" style="display:none">Contexts</button>
@@ -537,9 +573,26 @@
         <button class="success" onclick="api('POST','/api/services/start-defaults')">▶ Start Defaults</button>
         <button class="primary" onclick="api('POST','/api/services/start-all')">▶ Start All</button>
         <button class="danger" onclick="api('POST','/api/services/stop-all')">■ Stop All</button>
+        <button class="amber" onclick="togglePanel('add-service-panel')">＋ Add service</button>
         <span class="toolbar-right">
           <span id="running-count" style="font-size:11px;color:var(--muted)"></span>
         </span>
+      </div>
+      <div class="add-panel" id="add-service-panel" style="display:none">
+        <div class="section-header">New Kubernetes service forward</div>
+        <div class="form-grid">
+          <label>Display name <input type="text" id="as-name" placeholder="API Server" /></label>
+          <label>K8s service name <input type="text" id="as-svcname" placeholder="api-service" /></label>
+          <label>Remote port <input type="number" id="as-remote" min="1" max="65535" /></label>
+          <label>Local port <input type="number" id="as-local" min="1" max="65535" /></label>
+          <label class="checkbox-row"><input type="checkbox" id="as-def" /> Start with “Start defaults”</label>
+          <label>Context override <input type="text" id="as-ctx" placeholder="optional" /></label>
+          <label>Namespace override <input type="text" id="as-ns" placeholder="optional" /></label>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="primary" onclick="submitAddService()">Save to config</button>
+          <button onclick="togglePanel('add-service-panel')">Cancel</button>
+        </div>
       </div>
       <div class="service-list" id="service-list">
         <div class="empty">Loading…</div>
@@ -552,8 +605,25 @@
         <div class="proxy-card-header">
           <h3>Proxy Pods</h3>
           <div class="proxy-card-actions">
+            <button class="amber" onclick="togglePanel('add-proxy-panel')">＋ Add proxy service</button>
             <button class="success" onclick="startAllDefaults()">▶ Start Defaults</button>
             <button class="danger" onclick="confirmResetPod()">↺ Reset All Pods</button>
+          </div>
+        </div>
+        <div class="add-panel" id="add-proxy-panel" style="display:none;margin-bottom:16px">
+          <div class="section-header">New proxy pod forward (e.g. Cloud SQL)</div>
+          <div class="form-grid">
+            <label>Display name <input type="text" id="ap-name" placeholder="CloudSQL" /></label>
+            <label>Target host <input type="text" id="ap-host" placeholder="10.0.0.1" /></label>
+            <label>Target port <input type="number" id="ap-tport" min="1" max="65535" /></label>
+            <label>Local port <input type="number" id="ap-lport" min="1" max="65535" /></label>
+            <label>Proxy pod context <input type="text" id="ap-pctx" placeholder="kubectl context" /></label>
+            <label>Proxy pod namespace <input type="text" id="ap-pns" placeholder="namespace" /></label>
+            <label class="checkbox-row"><input type="checkbox" id="ap-def" /> Start with “Start defaults”</label>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="primary" onclick="submitAddProxy()">Save to config</button>
+            <button onclick="togglePanel('add-proxy-panel')">Cancel</button>
           </div>
         </div>
         <div id="proxy-groups"></div>
@@ -596,7 +666,15 @@
     <!-- Config -->
     <div class="pane" id="pane-config">
       <div class="toolbar" style="margin-bottom:16px">
-        <button onclick="reloadConfig()">↻ Reload Config</button>
+        <button onclick="reloadConfig()">↻ Reload from disk / DB</button>
+      </div>
+      <div class="config-info" style="margin-bottom:16px">
+        <div class="section-header" style="margin-bottom:8px">Import YAML</div>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:8px">Paste a full kubefwd YAML and replace the stored configuration.</p>
+        <textarea id="import-yaml-ta" rows="12" style="width:100%;font-family:inherit;font-size:11px;background:#0d1117;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px;resize:vertical" placeholder="cluster_context: ..."></textarea>
+        <div style="margin-top:8px">
+          <button class="primary" onclick="importYaml()">Import</button>
+        </div>
       </div>
       <div class="config-info" id="config-info"></div>
     </div>
@@ -669,8 +747,6 @@ connectSSE();
 
 // ── Init once ─────────────────────────────────────────
 function initFromState() {
-  document.getElementById('tab-proxy').style.display =
-    state.has_proxy_services ? '' : 'none';
   document.getElementById('tab-presets').style.display =
     (state.presets && state.presets.length) ? '' : 'none';
   document.getElementById('tab-contexts').style.display =
@@ -697,7 +773,7 @@ function render() {
 
   renderContexts();
   renderServices();
-  if (state.has_proxy_services) renderProxy();
+  renderProxy();
   renderConfig();
   renderDebugPanel(state.debug_lines);
 }
@@ -762,6 +838,7 @@ function serviceRow(s) {
         </div>
       </div>
       <div class="svc-actions">
+        <button class="icon" title="Remove from saved config" onclick="event.stopPropagation();configDeleteService('${esc(s.name)}')">✕</button>
         ${sqlTapWebBtn}
         ${sqlTapBtn}
         ${stopBtn}
@@ -788,6 +865,10 @@ function launchSqlTap(name) {
 function renderProxy() {
   const groups = state.proxy_groups || [];
   const container = document.getElementById('proxy-groups');
+  if (!groups.length) {
+    container.innerHTML = '<div class="empty">No proxy services yet. Use “Add proxy service” above.</div>';
+    return;
+  }
   container.innerHTML = groups.map(g => proxyGroupHTML(g)).join('');
 }
 
@@ -871,6 +952,7 @@ function proxyServiceRow(p) {
         </div>
       </div>
       <div class="svc-actions">
+        <button class="icon" title="Remove from saved config" onclick="event.stopPropagation();configDeleteProxy('${esc(p.name)}')">✕</button>
         ${sqlTapWebBtn}
         ${sqlTapLaunchBtn}
         ${sqltapInfoBtn}
@@ -1040,8 +1122,9 @@ function switchContext(ctx, name) {
 function renderConfig() {
   if (!state) return;
   const box = document.getElementById('config-info');
+  const src = state.config_source || state.config_file || '—';
   const rows = [
-    ['config_file',         state.config_file || '—'],
+    ['config_source',       src],
     ['cluster_context',     state.cluster_context],
     ['cluster_name',        state.cluster_name || '—'],
     ['namespace',           state.namespace],
@@ -1057,6 +1140,76 @@ function renderConfig() {
 
 async function reloadConfig() {
   await api('POST', '/api/config/reload', null, 'Config reloaded');
+}
+
+function togglePanel(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function submitAddService() {
+  const name = document.getElementById('as-name').value.trim();
+  const service_name = document.getElementById('as-svcname').value.trim();
+  const remote_port = parseInt(document.getElementById('as-remote').value, 10);
+  const local_port = parseInt(document.getElementById('as-local').value, 10);
+  if (!name || !service_name || !remote_port || !local_port) {
+    toast('Fill display name, k8s service name, and ports', 'err');
+    return;
+  }
+  const body = {
+    name, service_name, remote_port, local_port,
+    selected_by_default: document.getElementById('as-def').checked,
+  };
+  const ctx = document.getElementById('as-ctx').value.trim();
+  const ns = document.getElementById('as-ns').value.trim();
+  if (ctx) body.context = ctx;
+  if (ns) body.namespace = ns;
+  await api('POST', '/api/config/services', body, 'Service saved', () => {
+    document.getElementById('add-service-panel').style.display = 'none';
+  });
+}
+
+async function submitAddProxy() {
+  const name = document.getElementById('ap-name').value.trim();
+  const target_host = document.getElementById('ap-host').value.trim();
+  const target_port = parseInt(document.getElementById('ap-tport').value, 10);
+  const local_port = parseInt(document.getElementById('ap-lport').value, 10);
+  const proxy_pod_context = document.getElementById('ap-pctx').value.trim();
+  const proxy_pod_namespace = document.getElementById('ap-pns').value.trim();
+  if (!name || !target_host || !target_port || !local_port || !proxy_pod_context || !proxy_pod_namespace) {
+    toast('Fill all required fields including proxy pod context/namespace', 'err');
+    return;
+  }
+  const body = {
+    name, target_host, target_port, local_port,
+    proxy_pod_context, proxy_pod_namespace,
+    selected_by_default: document.getElementById('ap-def').checked,
+  };
+  await api('POST', '/api/config/proxy-services', body, 'Proxy service saved', () => {
+    document.getElementById('add-proxy-panel').style.display = 'none';
+  });
+}
+
+function configDeleteService(name) {
+  confirm2('Remove “' + name + '” from config?',
+    'The port-forward will be stopped if running.',
+    () => api('DELETE', '/api/config/services/' + encodeURIComponent(name), null, 'Service removed'));
+}
+
+function configDeleteProxy(name) {
+  confirm2('Remove “' + name + '” from config?',
+    'Proxy forwards for this service will be stopped.',
+    () => api('DELETE', '/api/config/proxy-services/' + encodeURIComponent(name), null, 'Removed'));
+}
+
+async function importYaml() {
+  const yaml = document.getElementById('import-yaml-ta').value;
+  if (!yaml.trim()) {
+    toast('Paste YAML first', 'err');
+    return;
+  }
+  await api('POST', '/api/config/import-yaml', { yaml }, 'Configuration imported');
 }
 
 // ── Tab navigation ────────────────────────────────────

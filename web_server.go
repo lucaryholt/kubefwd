@@ -19,7 +19,7 @@ var webFS embed.FS
 // WebApp is the central state holder for the web-based UI.
 type WebApp struct {
 	config           *Config
-	configFile       string
+	store            ConfigStore
 	portForwards     []*PortForward
 	proxyForwards    map[string]*ProxyForward
 	proxyPodManagers map[string]*ProxyPodManager // keyed by "context/namespace"
@@ -53,7 +53,7 @@ func buildProxyPodManagers(config *Config) map[string]*ProxyPodManager {
 }
 
 // NewWebApp creates and initialises a WebApp from the given config.
-func NewWebApp(config *Config, configFile string) *WebApp {
+func NewWebApp(config *Config, store ConfigStore) *WebApp {
 	pfs := make([]*PortForward, len(config.Services))
 	for i, svc := range config.Services {
 		pfs[i] = NewPortForward(svc, config.ClusterContext, config.Namespace, config.MaxRetries)
@@ -63,12 +63,32 @@ func NewWebApp(config *Config, configFile string) *WebApp {
 
 	return &WebApp{
 		config:           config,
-		configFile:       configFile,
+		store:            store,
 		portForwards:     pfs,
 		proxyPodManagers: managers,
 		proxyForwards:    make(map[string]*ProxyForward),
 		sseClients:       make(map[chan string]struct{}),
 	}
+}
+
+func (wa *WebApp) currentConfigClone() *Config {
+	wa.mu.RLock()
+	defer wa.mu.RUnlock()
+	return cloneConfig(wa.config)
+}
+
+// reapplyConfig stops all forwards and rebuilds runtime state from cfg (already normalized).
+func (wa *WebApp) reapplyConfig(cfg *Config) {
+	wa.StopAll()
+	wa.mu.Lock()
+	defer wa.mu.Unlock()
+	wa.config = cfg
+	wa.portForwards = make([]*PortForward, len(cfg.Services))
+	for i := range cfg.Services {
+		wa.portForwards[i] = NewPortForward(cfg.Services[i], cfg.ClusterContext, cfg.Namespace, cfg.MaxRetries)
+	}
+	wa.proxyPodManagers = buildProxyPodManagers(cfg)
+	wa.proxyForwards = make(map[string]*ProxyForward)
 }
 
 // StartDefaults starts all services marked selected_by_default.
@@ -215,7 +235,8 @@ type stateJSON struct {
 	ClusterContext   string                `json:"cluster_context"`
 	ClusterName      string                `json:"cluster_name"`
 	Namespace        string                `json:"namespace"`
-	ConfigFile       string                `json:"config_file"`
+	ConfigSource     string                `json:"config_source"`
+	ConfigFile       string                `json:"config_file"` // same as config_source; kept for older UI
 	Services         []serviceStateJSON    `json:"services"`
 	ProxyGroups      []proxyGroupStateJSON `json:"proxy_groups"`
 	Presets          []Preset              `json:"presets"`
@@ -327,11 +348,13 @@ func (wa *WebApp) buildStateJSON() string {
 		})
 	}
 
+	src := wa.store.Description()
 	state := stateJSON{
 		ClusterContext:   wa.config.ClusterContext,
 		ClusterName:      wa.config.ClusterName,
 		Namespace:        wa.config.Namespace,
-		ConfigFile:       wa.configFile,
+		ConfigSource:     src,
+		ConfigFile:       src,
 		Services:         services,
 		ProxyGroups:      proxyGroups,
 		Presets:          wa.config.Presets,
@@ -401,6 +424,11 @@ func (wa *WebApp) ListenAndServe(port int) error {
 
 	// Config
 	mux.HandleFunc("POST /api/config/reload", wa.handleConfigReload)
+	mux.HandleFunc("POST /api/config/import-yaml", wa.handleConfigImportYAML)
+	mux.HandleFunc("POST /api/config/services", wa.handlePostConfigService)
+	mux.HandleFunc("DELETE /api/config/services/{name}", wa.handleDeleteConfigService)
+	mux.HandleFunc("POST /api/config/proxy-services", wa.handlePostConfigProxyService)
+	mux.HandleFunc("DELETE /api/config/proxy-services/{name}", wa.handleDeleteConfigProxyService)
 
 	addr := fmt.Sprintf(":%d", port)
 	return http.ListenAndServe(addr, mux)
@@ -928,11 +956,7 @@ func (wa *WebApp) handleSwitchContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stop everything
-	wa.StopAll()
-
-	// Reload config with new context
-	newConfig, err := LoadConfig(wa.configFile)
+	newConfig, err := wa.store.Load()
 	if err != nil {
 		jsonError(w, "failed to reload config: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -940,15 +964,7 @@ func (wa *WebApp) handleSwitchContext(w http.ResponseWriter, r *http.Request) {
 	newConfig.ClusterContext = found.Context
 	newConfig.ClusterName = found.Name
 
-	wa.mu.Lock()
-	wa.config = newConfig
-	wa.portForwards = make([]*PortForward, len(newConfig.Services))
-	for i, svc := range newConfig.Services {
-		wa.portForwards[i] = NewPortForward(svc, newConfig.ClusterContext, newConfig.Namespace, newConfig.MaxRetries)
-	}
-	wa.proxyPodManagers = buildProxyPodManagers(newConfig)
-	wa.proxyForwards = make(map[string]*ProxyForward)
-	wa.mu.Unlock()
+	wa.reapplyConfig(newConfig)
 
 	jsonOK(w, map[string]string{"status": "switched", "context": found.Context})
 }
@@ -1055,33 +1071,190 @@ func (wa *WebApp) handleLaunchSqlTap(w http.ResponseWriter, r *http.Request) {
 	jsonError(w, "service not found", http.StatusNotFound)
 }
 
-// handleConfigReload reloads the config file without changing the context.
+// handleConfigReload reloads the config from the store without changing the active context.
 func (wa *WebApp) handleConfigReload(w http.ResponseWriter, r *http.Request) {
-	newConfig, err := LoadConfig(wa.configFile)
+	newConfig, err := wa.store.Load()
 	if err != nil {
 		jsonError(w, "failed to reload config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Preserve the current context in case it was switched at runtime
 	wa.mu.RLock()
 	currentContext := wa.config.ClusterContext
 	wa.mu.RUnlock()
 	newConfig.ClusterContext = currentContext
 
-	wa.StopAll()
-
-	wa.mu.Lock()
-	wa.config = newConfig
-	wa.portForwards = make([]*PortForward, len(newConfig.Services))
-	for i, svc := range newConfig.Services {
-		wa.portForwards[i] = NewPortForward(svc, newConfig.ClusterContext, newConfig.Namespace, newConfig.MaxRetries)
-	}
-	wa.proxyPodManagers = buildProxyPodManagers(newConfig)
-	wa.proxyForwards = make(map[string]*ProxyForward)
-	wa.mu.Unlock()
+	wa.reapplyConfig(newConfig)
 
 	jsonOK(w, map[string]string{"status": "reloaded"})
+}
+
+func (wa *WebApp) handleConfigImportYAML(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.YAML) == "" {
+		jsonError(w, "invalid body: yaml required", http.StatusBadRequest)
+		return
+	}
+	cfg, err := ParseConfigYAML([]byte(body.YAML))
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := wa.store.Save(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	loaded, err := wa.store.Load()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wa.reapplyConfig(loaded)
+	jsonOK(w, map[string]string{"status": "imported"})
+}
+
+func (wa *WebApp) handlePostConfigService(w http.ResponseWriter, r *http.Request) {
+	var sv Service
+	if err := json.NewDecoder(r.Body).Decode(&sv); err != nil {
+		jsonError(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	cfg := wa.currentConfigClone()
+	if cfg == nil {
+		jsonError(w, "no config", http.StatusInternalServerError)
+		return
+	}
+	for _, x := range cfg.Services {
+		if x.Name == sv.Name {
+			jsonError(w, "service name already exists", http.StatusConflict)
+			return
+		}
+	}
+	cfg.Services = append(cfg.Services, sv)
+	if err := wa.store.Save(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	loaded, err := wa.store.Load()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wa.mu.RLock()
+	loaded.ClusterContext = wa.config.ClusterContext
+	wa.mu.RUnlock()
+	wa.reapplyConfig(loaded)
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+func (wa *WebApp) handleDeleteConfigService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	cfg := wa.currentConfigClone()
+	if cfg == nil {
+		jsonError(w, "no config", http.StatusInternalServerError)
+		return
+	}
+	found := false
+	out := cfg.Services[:0]
+	for _, x := range cfg.Services {
+		if x.Name == name {
+			found = true
+			continue
+		}
+		out = append(out, x)
+	}
+	cfg.Services = out
+	if !found {
+		jsonError(w, "service not found", http.StatusNotFound)
+		return
+	}
+	if err := wa.store.Save(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	loaded, err := wa.store.Load()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wa.mu.RLock()
+	loaded.ClusterContext = wa.config.ClusterContext
+	wa.mu.RUnlock()
+	wa.reapplyConfig(loaded)
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+func (wa *WebApp) handlePostConfigProxyService(w http.ResponseWriter, r *http.Request) {
+	var ps ProxyService
+	if err := json.NewDecoder(r.Body).Decode(&ps); err != nil {
+		jsonError(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	cfg := wa.currentConfigClone()
+	if cfg == nil {
+		jsonError(w, "no config", http.StatusInternalServerError)
+		return
+	}
+	for _, x := range cfg.ProxyServices {
+		if x.Name == ps.Name {
+			jsonError(w, "proxy service name already exists", http.StatusConflict)
+			return
+		}
+	}
+	cfg.ProxyServices = append(cfg.ProxyServices, ps)
+	if err := wa.store.Save(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	loaded, err := wa.store.Load()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wa.mu.RLock()
+	loaded.ClusterContext = wa.config.ClusterContext
+	wa.mu.RUnlock()
+	wa.reapplyConfig(loaded)
+	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+func (wa *WebApp) handleDeleteConfigProxyService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	cfg := wa.currentConfigClone()
+	if cfg == nil {
+		jsonError(w, "no config", http.StatusInternalServerError)
+		return
+	}
+	found := false
+	out := cfg.ProxyServices[:0]
+	for _, x := range cfg.ProxyServices {
+		if x.Name == name {
+			found = true
+			continue
+		}
+		out = append(out, x)
+	}
+	cfg.ProxyServices = out
+	if !found {
+		jsonError(w, "proxy service not found", http.StatusNotFound)
+		return
+	}
+	if err := wa.store.Save(cfg); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	loaded, err := wa.store.Load()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wa.mu.RLock()
+	loaded.ClusterContext = wa.config.ClusterContext
+	wa.mu.RUnlock()
+	wa.reapplyConfig(loaded)
+	jsonOK(w, map[string]string{"status": "ok"})
 }
 
 // openBrowser tries to open the given URL in the system browser (macOS).

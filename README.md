@@ -14,13 +14,15 @@ A web-based tool for managing Kubernetes port forwards to GKE services and proxy
 - Automatic retry with exponential backoff when connections fail
 - Port status checker to identify and kill processes using configured ports
 - SQL traffic monitoring via [sql-tap](https://github.com/mickamy/sql-tap)
-- YAML-based configuration
+- **YAML file** or **SQLite** configuration (normalized relational schema in the database)
+- Add or remove normal and proxy services from the web UI (persisted to the active store)
+- Import a full YAML config from the Config tab (or seed SQLite via CLI)
 - Live status updates via Server-Sent Events (no polling)
 - Debug mode to troubleshoot kubectl commands
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Go 1.25 or later (see `go.mod`)
 - `kubectl` installed and configured
 - Access to a GKE cluster
 
@@ -48,7 +50,11 @@ A prebuilt binary is available on the [releases page](https://github.com/lucaryh
 
 ## Configuration
 
-Create a `.kubefwd.yaml` file in your home directory (or specify a custom path):
+Configuration can be stored in a **YAML file** (default) or a **SQLite database**. Both support the same schema: cluster settings, `services`, `proxy_services`, `presets`, and `alternative_contexts`.
+
+### YAML file (default)
+
+Create a `.kubefwd.yaml` file in your home directory (or specify a custom path with `--config`):
 
 ```yaml
 # The GKE cluster context (use 'kubectl config get-contexts' to list available contexts)
@@ -103,19 +109,40 @@ services:
     max_retries: 5                  # Override global retry setting
 
 # Optional: Proxy services for GCP resources that need a proxy pod
+# Each entry must set proxy_pod_context and proxy_pod_namespace (see config.example.yaml)
 proxy_services:
   - name: CloudSQL Production
     target_host: 10.1.2.3          # Private IP of CloudSQL instance
     target_port: 5432
     local_port: 5432
     selected_by_default: false
+    proxy_pod_context: gke_my-project_us-central1_my-cluster
+    proxy_pod_namespace: default
 
   - name: Redis MemoryStore
     target_host: 10.1.3.5          # Private IP of MemoryStore instance
     target_port: 6379
     local_port: 6380
     selected_by_default: true
+    proxy_pod_context: gke_my-project_us-central1_my-cluster
+    proxy_pod_namespace: default
 ```
+
+### SQLite storage
+
+Use **`--db /path/to/config.db`** to read and write configuration in a SQLite file instead of YAML. The database uses normalized tables (`settings`, `services`, `proxy_services`, `presets`, etc.); there is no single YAML blob stored in the DB.
+
+- **First-time setup:** the database must contain a valid config before kubefwd starts. Use **`--import-yaml /path/to/config.yaml`** together with **`--db`** to import a YAML file and then run. If the DB is empty, kubefwd exits with an error until you import. After the first successful start, you can paste YAML in the **Config** tab or add services from the **Services** / **Proxy** tabs; changes are written back to the SQLite file.
+
+Example:
+
+```bash
+./kubefwd --db ~/.kubefwd/kubefwd.db --import-yaml ./config.example.yaml
+# later:
+./kubefwd --db ~/.kubefwd/kubefwd.db
+```
+
+When `--db` is set, **`--config` is ignored** (YAML path is not used).
 
 ### Configuration Fields
 
@@ -155,9 +182,9 @@ proxy_services:
   - **target_host**: IP address or hostname of the target GCP resource (e.g., CloudSQL private IP)
   - **target_port**: Port on the target resource
   - **local_port**: Port on your local machine
-  - **selected_by_default**: Whether this service is started with `--default-proxy` or "Select Defaults"
-  - **context** (optional): Override the global cluster context for this proxy
-  - **namespace** (optional): Override the global namespace for this proxy
+  - **selected_by_default**: Whether this service is started with `--default-proxy` or "Start Defaults"
+  - **proxy_pod_context** (required): kubectl context where the proxy pod is created
+  - **proxy_pod_namespace** (required): Namespace where the proxy pod is created
   - **max_retries** (optional): Override the global max_retries setting for this proxy
   - **sql_tap_port** (optional): Port for sql-tap proxy (enables SQL traffic monitoring)
   - **sql_tap_driver** (optional): Database driver for sql-tap (`postgres` or `mysql`)
@@ -175,6 +202,12 @@ Or specify a custom config file:
 ./kubefwd --config /path/to/config.yaml
 ```
 
+Use SQLite instead of a YAML file:
+```bash
+./kubefwd --db ~/.kubefwd/kubefwd.db --import-yaml /path/to/config.yaml   # first time
+./kubefwd --db ~/.kubefwd/kubefwd.db
+```
+
 On startup, kubefwd prints the URL of its web interface and keeps running:
 
 ```
@@ -184,7 +217,9 @@ kubefwd running at http://localhost:8765
 Open the URL in your browser. Press `Ctrl+C` to stop all services and exit.
 
 **Command-line flags:**
-- `--config <path>`: Path to configuration file (default: `~/.kubefwd.yaml`)
+- `--config <path>`: Path to YAML configuration file (default: `~/.kubefwd.yaml`). Ignored when `--db` is set.
+- `--db <path>`: Use a SQLite file for configuration instead of YAML.
+- `--import-yaml <path>`: Import YAML into the SQLite database (only with `--db`), then continue startup.
 - `--debug`: Enable debug output showing kubectl commands (written to stderr and `/tmp/kubefwd-debug.log`)
 - `--default`: Auto-start services marked with `selected_by_default: true` on launch
 - `--default-proxy`: Auto-start proxy services marked with `selected_by_default: true` on launch
@@ -211,7 +246,7 @@ nano ~/.kubefwd.yaml
 
 kubefwd serves a browser-based dashboard at `http://localhost:<web_port>` (default: `http://localhost:8765`). The port is configurable via `web_port` in your config file.
 
-The dashboard has six tabs:
+The dashboard has six tabs.
 
 ### Services tab
 
@@ -219,21 +254,21 @@ Displays all configured port forwards with live status indicators:
 
 - **Status dot colours**: green = running, amber (pulsing) = starting, red = error, grey = stopped
 - **Click any row** to toggle that service on/off, or use the dedicated Start/Stop button on the right
-- **Toolbar buttons**: Start Defaults, Start All, Stop All
+- **Toolbar buttons**: Start Defaults, Start All, Stop All, **＋ Add service** (form to append a service to the saved configuration)
+- **✕** on a row removes that service from the saved configuration (with confirmation)
 - **Running count** shown in the toolbar right area
 - Services in retry mode show the attempt counter (e.g. `↻ 2/5` or `↻ 3/∞`)
 - Error messages appear inline below a failed service row
 
 ### Proxy tab
 
-Shown only when `proxy_services` are configured.
+Always available. When there are no proxy services yet, the tab explains how to add one.
 
-- **Pod status** indicator at the top shows the lifecycle state of the shared proxy pod
-- **Checkbox list** of all proxy services — check/uncheck to stage a new selection
-- **Pending changes banner** appears when your staged selection differs from the live state; click **Apply** to recreate the pod with the new selection or **Discard** to abandon changes
-- **★ Select Defaults** button: sets the checkbox state to match each service's `selected_by_default` value
-- **↺ Reset Pod** button: stops all active proxy forwards and sql-tap instances, deletes the pod, then recreates it with the same services — useful for clearing a stuck or broken pod
-- **ℹ sql-tap** button (appears on services with sql-tap configured): expands an inline panel showing the listen port, upstream port, gRPC port, and the terminal command to run the sql-tap client (`sql-tap localhost:<grpc_port>`)
+- **＋ Add proxy service**: form to add a proxy entry (target host/port, local port, proxy pod context/namespace)
+- **▶ Start Defaults** / **↺ Reset All Pods** in the header for bulk actions
+- Proxy services are grouped by **proxy pod context + namespace**; each group shows **pod status**, **▶ Start Pod**, and **✕ Kill Pod**
+- Per-row **▶ Start** / **■ Stop** for the port-forward, **✕** to remove the entry from the saved configuration
+- **ℹ sql-tap** (when configured): expands an inline panel with ports and `sql-tap localhost:<grpc_port>`
 
 ### Port Checker tab
 
@@ -255,12 +290,11 @@ Shown only when `alternative_contexts` are configured. Click a context row to sw
 
 ### Config tab
 
-Displays a read-only summary of the active configuration including:
-- Full path to the config file
-- Active cluster context and namespace
-- Count of defined services, proxy services, presets, and alternative contexts
+- **Import YAML**: paste a full kubefwd YAML document and click **Import** to replace the stored configuration and reload the app (same validation as the file/DB load path)
+- **↻ Reload from disk / DB**: reload configuration from the YAML file or SQLite store without restarting the process (stops all running services first). The active cluster context is preserved when switching was done only in memory (same as before).
+- Summary rows include **`config_source`**: path to the YAML file, or `sqlite:` plus the database path
 
-Click **↻ Reload Config** to reload the YAML from disk without restarting (stops all running services first).
+Changes made from the Services/Proxy tabs or Config import are **persisted** to whichever store is in use (atomic YAML replace or SQLite transaction).
 
 ## Proxy Pod for GCP Resources
 
@@ -447,7 +481,7 @@ services:
 7. **GCP Resources**: Use proxy services for CloudSQL, MemoryStore, and other GCP resources with private IPs
 8. **Quick Start**: Use `--default` / `--default-proxy` to auto-start common services on launch
 9. **Custom port**: Set `web_port` in your config to change the web UI port (e.g. `web_port: 9000`)
-10. **Multiple environments**: Use different config files (`--config`) to manage separate clusters
+10. **Multiple environments**: Use different YAML files (`--config`) or different SQLite files (`--db`) to manage separate clusters
 
 ## Troubleshooting
 
@@ -503,11 +537,13 @@ kubectl logs kubefwd-proxy -n <namespace> --all-containers
 
 ```
 kubefwd/
-├── main.go                 # Entry point — starts HTTP server, signal handling
+├── main.go                 # Entry point — CLI flags, HTTP server, signal handling
 ├── web_server.go           # WebApp state, HTTP handlers, SSE broadcaster
 ├── web/
 │   └── index.html          # Embedded web UI (inline CSS + JS)
-├── config.go               # Config struct and YAML loading
+├── config.go               # Config struct, validation, YAML parse/load
+├── config_store.go         # ConfigStore: YAML file + SQLite (normalized schema)
+├── config_test.go          # Tests for config parsing / validation
 ├── portforward.go          # kubectl port-forward process management
 ├── proxypod.go             # Proxy pod lifecycle and ProxyForward
 ├── sqltap.go               # sql-tapd process management
@@ -519,5 +555,6 @@ kubefwd/
 ```
 
 This project uses:
-- [yaml.v3](https://gopkg.in/yaml.v3) — YAML parsing
-- Go standard library only for the web server (`net/http`, `embed`)
+- [yaml.v3](https://gopkg.in/yaml.v3) — YAML parsing and file export
+- [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — pure-Go SQLite driver (optional; only when using `--db`)
+- Go standard library for the web server (`net/http`, `embed`)

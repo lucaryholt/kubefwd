@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -25,7 +26,9 @@ func getDefaultConfigPath() string {
 }
 
 func main() {
-	configFile := flag.String("config", getDefaultConfigPath(), "Path to configuration file")
+	configFile := flag.String("config", getDefaultConfigPath(), "Path to YAML configuration file (ignored when -db is set)")
+	dbPath := flag.String("db", "", "SQLite database path for configuration (if set, YAML file is not used)")
+	importYAML := flag.String("import-yaml", "", "Import a YAML file into the SQLite database (only with -db), then start")
 	debug := flag.Bool("debug", false, "Enable debug output")
 	defaultFlag := flag.Bool("default", false, "Auto-start services marked with selected_by_default")
 	defaultProxyFlag := flag.Bool("default-proxy", false, "Auto-start proxy services marked with selected_by_default")
@@ -40,10 +43,46 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load configuration
-	config, err := LoadConfig(*configFile)
+	var store ConfigStore
+	var sqliteDB *SQLiteConfigStore
+
+	if *dbPath != "" {
+		var err error
+		sqliteDB, err = NewSQLiteConfigStore(*dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening SQLite store: %v\n", err)
+			os.Exit(1)
+		}
+		defer func() { _ = sqliteDB.Close() }()
+		store = sqliteDB
+
+		if *importYAML != "" {
+			data, err := os.ReadFile(*importYAML)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading import file: %v\n", err)
+				os.Exit(1)
+			}
+			cfg, err := ParseConfigYAML(data)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing import YAML: %v\n", err)
+				os.Exit(1)
+			}
+			if err := store.Save(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "Error saving imported config: %v\n", err)
+				os.Exit(1)
+			}
+		}
+	} else {
+		store = &FileConfigStore{Path: *configFile}
+	}
+
+	config, err := store.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading configuration from %s: %v\n", *configFile, err)
+		if *dbPath != "" && errors.Is(err, ErrSQLiteEmpty) {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Error loading configuration from %s: %v\n", store.Description(), err)
 		os.Exit(1)
 	}
 
@@ -78,7 +117,7 @@ func main() {
 	}
 
 	// Create the web application state
-	app := NewWebApp(config, *configFile)
+	app := NewWebApp(config, store)
 
 	// Auto-start default services if requested
 	if *defaultFlag {
