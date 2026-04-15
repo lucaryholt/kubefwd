@@ -23,6 +23,7 @@ type WebApp struct {
 	portForwards     []*PortForward
 	proxyForwards    map[string]*ProxyForward
 	proxyPodManagers map[string]*ProxyPodManager // keyed by "context/namespace"
+	explorer         *Explorer
 	mu               sync.RWMutex
 
 	// SSE clients
@@ -67,6 +68,7 @@ func NewWebApp(config *Config, store ConfigStore) *WebApp {
 		portForwards:     pfs,
 		proxyPodManagers: managers,
 		proxyForwards:    make(map[string]*ProxyForward),
+		explorer:         NewExplorer(),
 		sseClients:       make(map[chan string]struct{}),
 	}
 }
@@ -421,6 +423,13 @@ func (wa *WebApp) ListenAndServe(port int) error {
 
 	// SQL Tap
 	mux.HandleFunc("POST /api/sqltap/{name}/launch", wa.handleLaunchSqlTap)
+
+	// Explorer
+	mux.HandleFunc("GET /api/explorer/contexts", wa.handleExplorerContexts)
+	mux.HandleFunc("GET /api/explorer/namespaces", wa.handleExplorerNamespaces)
+	mux.HandleFunc("GET /api/explorer/services", wa.handleExplorerServices)
+	mux.HandleFunc("GET /api/explorer/gcp/projects", wa.handleExplorerGCPProjects)
+	mux.HandleFunc("GET /api/explorer/gcp", wa.handleExplorerGCP)
 
 	// Config
 	mux.HandleFunc("POST /api/config/reload", wa.handleConfigReload)
@@ -1255,6 +1264,70 @@ func (wa *WebApp) handleDeleteConfigProxyService(w http.ResponseWriter, r *http.
 	wa.mu.RUnlock()
 	wa.reapplyConfig(loaded)
 	jsonOK(w, map[string]string{"status": "ok"})
+}
+
+// --- Explorer handlers ---
+
+func (wa *WebApp) handleExplorerContexts(w http.ResponseWriter, r *http.Request) {
+	contexts, err := wa.explorer.DiscoverContexts()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, contexts)
+}
+
+func (wa *WebApp) handleExplorerNamespaces(w http.ResponseWriter, r *http.Request) {
+	kubeCtx := r.URL.Query().Get("context")
+	if kubeCtx == "" {
+		jsonError(w, "context query parameter required", http.StatusBadRequest)
+		return
+	}
+	namespaces, err := wa.explorer.DiscoverNamespaces(kubeCtx)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, namespaces)
+}
+
+func (wa *WebApp) handleExplorerServices(w http.ResponseWriter, r *http.Request) {
+	kubeCtx := r.URL.Query().Get("context")
+	ns := r.URL.Query().Get("namespace")
+	if kubeCtx == "" || ns == "" {
+		jsonError(w, "context and namespace query parameters required", http.StatusBadRequest)
+		return
+	}
+	wa.mu.RLock()
+	cfg := wa.config
+	wa.mu.RUnlock()
+
+	services, err := wa.explorer.DiscoverServices(kubeCtx, ns, cfg)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, services)
+}
+
+func (wa *WebApp) handleExplorerGCPProjects(w http.ResponseWriter, r *http.Request) {
+	projects, active, err := wa.explorer.DiscoverGCPProjects()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]any{"projects": projects, "active": active})
+}
+
+func (wa *WebApp) handleExplorerGCP(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+
+	wa.mu.RLock()
+	cfg := wa.config
+	wa.mu.RUnlock()
+
+	result := wa.explorer.DiscoverGCP(project, cfg)
+	jsonOK(w, result)
 }
 
 // openBrowser tries to open the given URL in the system browser (macOS).

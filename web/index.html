@@ -546,6 +546,100 @@
   #debug-log .dbg-line:nth-child(odd) { color: #7ee787; }
   #debug-log .dbg-line:nth-child(even) { color: #a8d8a8; }
   #debug-log .dbg-empty { color: var(--muted); font-style: italic; }
+
+  /* ── Explorer ── */
+  .explorer-section {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .explorer-section-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    transition: background .1s;
+  }
+  .explorer-section-header:hover { background: rgba(255,255,255,.03); }
+  .explorer-section-header h3 {
+    font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px;
+    margin: 0; flex: 1;
+  }
+  .explorer-chevron {
+    font-size: 11px; color: var(--muted);
+    transition: transform .2s;
+  }
+  .explorer-section.open .explorer-chevron { transform: rotate(90deg); }
+  .explorer-section-body {
+    display: none;
+    padding: 0 16px 16px;
+  }
+  .explorer-section.open .explorer-section-body { display: block; }
+  .explorer-controls {
+    display: flex; gap: 8px; align-items: center;
+    margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .explorer-controls select {
+    font-family: inherit; font-size: 12px;
+    padding: 5px 8px; border-radius: 4px;
+    border: 1px solid var(--border);
+    background: #0d1117; color: var(--text);
+    min-width: 160px; max-width: 300px;
+  }
+  .explorer-controls select:disabled { opacity: .4; }
+  .explorer-controls label {
+    font-size: 11px; color: var(--muted);
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .explorer-list { display: flex; flex-direction: column; gap: 2px; }
+  .explorer-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    transition: background .1s, border-color .1s;
+  }
+  .explorer-row:hover { background: rgba(255,255,255,.04); border-color: var(--border); }
+  .explorer-row .svc-type {
+    font-size: 10px; color: var(--muted);
+    background: rgba(255,255,255,.06);
+    border: 1px solid var(--border);
+    border-radius: 3px; padding: 1px 6px;
+  }
+  .explorer-row .svc-ports {
+    font-size: 11px; color: var(--muted);
+    display: flex; gap: 4px; flex-wrap: wrap;
+  }
+  .badge-in-config {
+    font-size: 10px; background: rgba(63,185,80,.1);
+    border: 1px solid rgba(63,185,80,.3); color: var(--green);
+    border-radius: 3px; padding: 1px 6px;
+  }
+  .explorer-spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .explorer-gcp-type {
+    font-size: 11px; font-weight: 600; color: var(--accent);
+    margin: 12px 0 6px 0;
+  }
+  .explorer-gcp-type:first-child { margin-top: 0; }
+  .gcp-unavailable {
+    color: var(--muted); font-size: 12px;
+    padding: 12px 0; font-style: italic;
+  }
+  .explorer-project {
+    font-size: 11px; color: var(--muted);
+    margin-left: auto;
+  }
 </style>
 </head>
 <body>
@@ -563,6 +657,7 @@
     <button class="tab" data-pane="ports">Port Checker</button>
     <button class="tab" data-pane="presets" id="tab-presets" style="display:none">Presets</button>
     <button class="tab" data-pane="contexts" id="tab-contexts" style="display:none">Contexts</button>
+    <button class="tab" data-pane="explore">Explore</button>
     <button class="tab" data-pane="config">Config</button>
   </nav>
 
@@ -660,6 +755,71 @@
       <div class="section-header" style="margin-bottom:14px">Switch the active Kubernetes context. All running services will be restarted.</div>
       <div class="context-list" id="context-list">
         <div class="empty">No alternative contexts configured.</div>
+      </div>
+    </div>
+
+    <!-- Explore -->
+    <div class="pane" id="pane-explore">
+      <!-- K8s Services -->
+      <div class="explorer-section" id="exp-k8s-section">
+        <div class="explorer-section-header" onclick="toggleExplorerSection('exp-k8s-section')">
+          <h3>Kubernetes Services</h3>
+          <span class="explorer-chevron">▶</span>
+        </div>
+        <div class="explorer-section-body">
+          <div class="explorer-controls">
+            <label>Context
+              <select id="exp-ctx" onchange="onExplorerCtxChange()">
+                <option value="">Select context...</option>
+              </select>
+            </label>
+            <label>Namespace
+              <select id="exp-ns" onchange="onExplorerNsChange()" disabled>
+                <option value="">Select namespace...</option>
+              </select>
+            </label>
+            <button class="primary" id="exp-scan-btn" onclick="explorerScanServices()" disabled>Scan</button>
+            <span id="exp-svc-spinner" style="display:none"><span class="explorer-spinner"></span></span>
+          </div>
+          <div class="explorer-list" id="exp-svc-list">
+            <div class="empty">Select a context and namespace, then click Scan.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- GCP Resources -->
+      <div class="explorer-section" id="exp-gcp-section">
+        <div class="explorer-section-header" onclick="toggleExplorerSection('exp-gcp-section')">
+          <h3>GCP Resources</h3>
+          <span class="explorer-chevron">▶</span>
+        </div>
+        <div class="explorer-section-body">
+          <div class="explorer-controls">
+            <label>GCP Project
+              <select id="exp-gcp-proj" onchange="onGcpProjectChange()">
+                <option value="">Click "Load Projects"</option>
+              </select>
+            </label>
+            <label>Proxy Pod Context
+              <select id="exp-gcp-ctx" onchange="onGcpCtxChange()">
+                <option value="">Select context...</option>
+              </select>
+            </label>
+            <label>Proxy Pod Namespace
+              <select id="exp-gcp-ns" onchange="updateGcpScanBtn()" disabled>
+                <option value="">Select namespace...</option>
+              </select>
+            </label>
+          </div>
+          <div class="explorer-controls">
+            <button class="primary" id="exp-gcp-load-proj-btn" onclick="explorerLoadGCPProjects()">Load Projects</button>
+            <button class="primary" id="exp-gcp-scan-btn" onclick="explorerScanGCP()" disabled>Scan</button>
+            <span id="exp-gcp-spinner" style="display:none"><span class="explorer-spinner"></span></span>
+          </div>
+          <div id="exp-gcp-list">
+            <div class="empty">Select a GCP project and proxy pod context, then click Scan.</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1118,6 +1278,368 @@ function switchContext(ctx, name) {
     () => api('POST', '/api/contexts/switch', { context: ctx }, 'Context switched to ' + name));
 }
 
+// ── Explorer pane ─────────────────────────────────────
+let explorerCtxLoaded = false;
+let explorerGcpData = null;
+
+function toggleExplorerSection(id) {
+  const section = document.getElementById(id);
+  const opening = !section.classList.contains('open');
+  section.classList.toggle('open');
+  if (opening) {
+    if (id === 'exp-k8s-section') explorerLoadContexts();
+    if (id === 'exp-gcp-section') explorerLoadGCPProjects();
+  }
+}
+
+async function explorerLoadContexts() {
+  if (explorerCtxLoaded) return;
+  const sel = document.getElementById('exp-ctx');
+  sel.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const res = await fetch('/api/explorer/contexts');
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Failed to load contexts', 'err'); return; }
+    const ctxs = data || [];
+    let opts = '<option value="">Select context...</option>';
+    const current = state ? state.cluster_context : '';
+    ctxs.forEach(c => {
+      const selected = c === current ? ' selected' : '';
+      opts += `<option value="${esc(c)}"${selected}>${esc(c)}</option>`;
+    });
+    sel.innerHTML = opts;
+    explorerCtxLoaded = true;
+    if (current && ctxs.includes(current)) onExplorerCtxChange();
+  } catch(e) {
+    sel.innerHTML = '<option value="">Error loading contexts</option>';
+    toast('Network error loading contexts: ' + e.message, 'err');
+  }
+}
+
+async function onExplorerCtxChange() {
+  const ctx = document.getElementById('exp-ctx').value;
+  const nsSel = document.getElementById('exp-ns');
+  const scanBtn = document.getElementById('exp-scan-btn');
+  document.getElementById('exp-svc-list').innerHTML = '<div class="empty">Select a namespace, then click Scan.</div>';
+
+  if (!ctx) {
+    nsSel.innerHTML = '<option value="">Select namespace...</option>';
+    nsSel.disabled = true;
+    scanBtn.disabled = true;
+    return;
+  }
+  nsSel.innerHTML = '<option value="">Loading...</option>';
+  nsSel.disabled = true;
+  scanBtn.disabled = true;
+  try {
+    const res = await fetch('/api/explorer/namespaces?context=' + encodeURIComponent(ctx));
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Failed to load namespaces', 'err'); return; }
+    const nss = data || [];
+    let opts = '<option value="">Select namespace...</option>';
+    const currentNs = state ? state.namespace : '';
+    nss.forEach(ns => {
+      const selected = ns === currentNs ? ' selected' : '';
+      opts += `<option value="${esc(ns)}"${selected}>${esc(ns)}</option>`;
+    });
+    nsSel.innerHTML = opts;
+    nsSel.disabled = false;
+    if (currentNs && nss.includes(currentNs)) onExplorerNsChange();
+  } catch(e) {
+    nsSel.innerHTML = '<option value="">Error</option>';
+    toast('Network error loading namespaces: ' + e.message, 'err');
+  }
+}
+
+function onExplorerNsChange() {
+  const ns = document.getElementById('exp-ns').value;
+  document.getElementById('exp-scan-btn').disabled = !ns;
+  if (ns) explorerScanServices();
+}
+
+async function explorerScanServices() {
+  const ctx = document.getElementById('exp-ctx').value;
+  const ns = document.getElementById('exp-ns').value;
+  if (!ctx || !ns) return;
+
+  const list = document.getElementById('exp-svc-list');
+  const spinner = document.getElementById('exp-svc-spinner');
+  spinner.style.display = '';
+  list.innerHTML = '<div class="empty">Scanning...</div>';
+
+  try {
+    const res = await fetch('/api/explorer/services?context=' + encodeURIComponent(ctx) + '&namespace=' + encodeURIComponent(ns));
+    const data = await res.json();
+    spinner.style.display = 'none';
+    if (!res.ok) { list.innerHTML = '<div class="empty">Error: ' + esc(data.error || 'unknown') + '</div>'; return; }
+    if (!data || !data.length) { list.innerHTML = '<div class="empty">No services found in this namespace.</div>'; return; }
+    list.innerHTML = data.map(svc => explorerSvcRow(svc, ctx, ns)).join('');
+  } catch(e) {
+    spinner.style.display = 'none';
+    list.innerHTML = '<div class="empty">Network error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function explorerSvcRow(svc, ctx, ns) {
+  const portsHtml = (svc.ports || []).map(p => {
+    const label = (p.name ? p.name + ':' : '') + p.port + '/' + (p.protocol || 'TCP');
+    return `<span class="port-tag">${esc(label)}</span>`;
+  }).join('');
+
+  const addBtns = svc.in_config
+    ? '<span class="badge-in-config">added</span>'
+    : (svc.ports || []).map(p =>
+        `<button class="success" onclick="event.stopPropagation();explorerAddService('${esc(svc.name)}',${p.port},'${esc(ctx)}','${esc(ns)}')">+ Add :${p.port}</button>`
+      ).join('');
+
+  return `<div class="explorer-row">
+    <div class="svc-info">
+      <div class="svc-name"><span class="svc-name-text">${esc(svc.name)}</span>
+        <span class="svc-type">${esc(svc.type)}</span></div>
+      <div class="svc-ports">${portsHtml}</div>
+    </div>
+    <div>${esc(svc.cluster_ip || '')}</div>
+    <div class="svc-actions">${addBtns}</div>
+  </div>`;
+}
+
+async function explorerAddService(svcName, port, ctx, ns) {
+  const currentCtx = state ? state.cluster_context : '';
+  const currentNs = state ? state.namespace : '';
+  const body = {
+    name: svcName,
+    service_name: svcName,
+    remote_port: port,
+    local_port: port,
+    selected_by_default: false,
+  };
+  if (ctx && ctx !== currentCtx) body.context = ctx;
+  if (ns && ns !== currentNs) body.namespace = ns;
+  await api('POST', '/api/config/services', body, 'Service "' + svcName + '" added to config', () => {
+    explorerScanServices();
+  });
+}
+
+let gcpProjectsLoaded = false;
+let gcpCtxLoaded = false;
+
+async function explorerLoadGCPProjects() {
+  const sel = document.getElementById('exp-gcp-proj');
+  const loadBtn = document.getElementById('exp-gcp-load-proj-btn');
+  sel.innerHTML = '<option value="">Loading...</option>';
+  loadBtn.disabled = true;
+
+  try {
+    const res = await fetch('/api/explorer/gcp/projects');
+    const data = await res.json();
+    if (!res.ok) {
+      sel.innerHTML = '<option value="">Error</option>';
+      toast(data.error || 'Failed to load projects', 'err');
+      loadBtn.disabled = false;
+      return;
+    }
+    const projects = data.projects || [];
+    const active = data.active || '';
+    if (!projects.length) {
+      sel.innerHTML = '<option value="">No projects found</option>';
+      loadBtn.disabled = false;
+      return;
+    }
+    let opts = '<option value="">Select project...</option>';
+    projects.forEach(p => {
+      const label = p.name && p.name !== p.project_id ? p.project_id + ' (' + p.name + ')' : p.project_id;
+      const selected = p.project_id === active ? ' selected' : '';
+      opts += `<option value="${esc(p.project_id)}"${selected}>${esc(label)}</option>`;
+    });
+    sel.innerHTML = opts;
+    gcpProjectsLoaded = true;
+    loadBtn.textContent = '↻ Reload Projects';
+    loadBtn.disabled = false;
+
+    // Also populate context dropdown (reuse K8s contexts)
+    if (!gcpCtxLoaded) await explorerLoadGCPContexts();
+    updateGcpScanBtn();
+    if (active) onGcpProjectChange();
+  } catch(e) {
+    sel.innerHTML = '<option value="">Error</option>';
+    toast('Network error: ' + e.message, 'err');
+    loadBtn.disabled = false;
+  }
+}
+
+async function explorerLoadGCPContexts() {
+  const sel = document.getElementById('exp-gcp-ctx');
+  sel.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const res = await fetch('/api/explorer/contexts');
+    const data = await res.json();
+    if (!res.ok) { sel.innerHTML = '<option value="">Error</option>'; return; }
+    const ctxs = data || [];
+    let opts = '<option value="">Select context...</option>';
+    const current = state ? state.cluster_context : '';
+    ctxs.forEach(c => {
+      const selected = c === current ? ' selected' : '';
+      opts += `<option value="${esc(c)}"${selected}>${esc(c)}</option>`;
+    });
+    sel.innerHTML = opts;
+    gcpCtxLoaded = true;
+    if (current && ctxs.includes(current)) onGcpCtxChange();
+  } catch(e) {
+    sel.innerHTML = '<option value="">Error</option>';
+  }
+}
+
+async function onGcpCtxChange() {
+  const ctx = document.getElementById('exp-gcp-ctx').value;
+  const nsSel = document.getElementById('exp-gcp-ns');
+  if (!ctx) {
+    nsSel.innerHTML = '<option value="">Select namespace...</option>';
+    nsSel.disabled = true;
+    updateGcpScanBtn();
+    return;
+  }
+  nsSel.innerHTML = '<option value="">Loading...</option>';
+  nsSel.disabled = true;
+  try {
+    const res = await fetch('/api/explorer/namespaces?context=' + encodeURIComponent(ctx));
+    const data = await res.json();
+    if (!res.ok) { nsSel.innerHTML = '<option value="">Error</option>'; return; }
+    const nss = data || [];
+    let opts = '<option value="">Select namespace...</option>';
+    const currentNs = state ? state.namespace : '';
+    nss.forEach(ns => {
+      const selected = ns === currentNs ? ' selected' : '';
+      opts += `<option value="${esc(ns)}"${selected}>${esc(ns)}</option>`;
+    });
+    nsSel.innerHTML = opts;
+    nsSel.disabled = false;
+    updateGcpScanBtn();
+  } catch(e) {
+    nsSel.innerHTML = '<option value="">Error</option>';
+  }
+}
+
+function onGcpProjectChange() {
+  updateGcpScanBtn();
+}
+
+function updateGcpScanBtn() {
+  const proj = document.getElementById('exp-gcp-proj').value;
+  const ctx = document.getElementById('exp-gcp-ctx').value;
+  const ns = document.getElementById('exp-gcp-ns').value;
+  document.getElementById('exp-gcp-scan-btn').disabled = !(proj && ctx && ns);
+}
+
+async function explorerScanGCP() {
+  const project = document.getElementById('exp-gcp-proj').value;
+  if (!project) { toast('Select a GCP project first', 'err'); return; }
+
+  const list = document.getElementById('exp-gcp-list');
+  const spinner = document.getElementById('exp-gcp-spinner');
+  spinner.style.display = '';
+  list.innerHTML = '<div class="empty">Scanning GCP resources...</div>';
+
+  try {
+    const res = await fetch('/api/explorer/gcp?project=' + encodeURIComponent(project));
+    const data = await res.json();
+    spinner.style.display = 'none';
+    if (!res.ok) { list.innerHTML = '<div class="empty">Error: ' + esc(data.error || 'unknown') + '</div>'; return; }
+
+    if (!data.available) {
+      list.innerHTML = '<div class="gcp-unavailable">gcloud CLI not found. Install it to discover GCP resources.</div>';
+      return;
+    }
+
+    explorerGcpData = data;
+
+    let html = '';
+    if (data.error) {
+      html += '<div style="font-size:11px;color:var(--amber);margin-bottom:8px">Partial results: ' + esc(data.error) + '</div>';
+    }
+
+    const sql = data.cloudsql || [];
+    const redis = data.memorystore || [];
+
+    if (!sql.length && !redis.length) {
+      list.innerHTML = '<div class="empty">No GCP resources found.' + (data.error ? ' (some queries failed)' : '') + '</div>';
+      return;
+    }
+
+    if (sql.length) {
+      html += '<div class="explorer-gcp-type">Cloud SQL</div>';
+      html += '<div class="explorer-list">' + sql.map(explorerCloudSQLRow).join('') + '</div>';
+    }
+    if (redis.length) {
+      html += '<div class="explorer-gcp-type">Memorystore (Redis)</div>';
+      html += '<div class="explorer-list">' + redis.map(explorerRedisRow).join('') + '</div>';
+    }
+    list.innerHTML = html;
+  } catch(e) {
+    spinner.style.display = 'none';
+    list.innerHTML = '<div class="empty">Network error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function explorerCloudSQLRow(inst) {
+  const ip = inst.private_ip || inst.public_ip || '—';
+  const port = inst.db_version && inst.db_version.startsWith('POSTGRES') ? 5432 : 3306;
+  const addBtn = inst.in_config
+    ? '<span class="badge-in-config">added</span>'
+    : `<button class="success" onclick="event.stopPropagation();explorerAddProxy('${esc(inst.name)}','${esc(ip)}',${port})">+ Add</button>`;
+  return `<div class="explorer-row">
+    <div class="svc-info">
+      <div class="svc-name"><span class="svc-name-text">${esc(inst.name)}</span>
+        <span class="svc-type">${esc(inst.db_version || '')}</span></div>
+      <div class="svc-meta">
+        <span class="port-tag">${esc(ip)}:${port}</span>
+        <span style="color:var(--muted)">${esc(inst.region || '')}</span>
+      </div>
+    </div>
+    <div></div>
+    <div class="svc-actions">${addBtn}</div>
+  </div>`;
+}
+
+function explorerRedisRow(inst) {
+  const port = inst.port || 6379;
+  const addBtn = inst.in_config
+    ? '<span class="badge-in-config">added</span>'
+    : `<button class="success" onclick="event.stopPropagation();explorerAddProxy('${esc(inst.name)}','${esc(inst.host)}',${port})">+ Add</button>`;
+  return `<div class="explorer-row">
+    <div class="svc-info">
+      <div class="svc-name"><span class="svc-name-text">${esc(inst.name)}</span>
+        <span class="svc-type">Redis ${esc(inst.version || '')}</span></div>
+      <div class="svc-meta">
+        <span class="port-tag">${esc(inst.host || '')}:${port}</span>
+        <span style="color:var(--muted)">${esc(inst.region || '')} · ${esc(inst.tier || '')}</span>
+      </div>
+    </div>
+    <div></div>
+    <div class="svc-actions">${addBtn}</div>
+  </div>`;
+}
+
+async function explorerAddProxy(name, host, port) {
+  const ctx = document.getElementById('exp-gcp-ctx').value || (state ? state.cluster_context : '');
+  const ns = document.getElementById('exp-gcp-ns').value || (state ? state.namespace : '');
+  if (!ctx || !ns) {
+    toast('Select a proxy pod context and namespace first', 'err');
+    return;
+  }
+  const body = {
+    name: name,
+    target_host: host,
+    target_port: port,
+    local_port: port,
+    proxy_pod_context: ctx,
+    proxy_pod_namespace: ns,
+    selected_by_default: false,
+  };
+  await api('POST', '/api/config/proxy-services', body, 'Proxy "' + name + '" added to config', () => {
+    explorerScanGCP();
+  });
+}
+
 // ── Config pane ───────────────────────────────────────
 function renderConfig() {
   if (!state) return;
@@ -1223,6 +1745,7 @@ document.querySelectorAll('.tab').forEach(btn => {
     if (pane === 'ports') loadPorts();
     if (pane === 'presets') renderPresets();
     if (pane === 'contexts') renderContexts();
+    // explore sections self-load on expand
   });
 });
 
